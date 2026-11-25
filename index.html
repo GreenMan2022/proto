@@ -202,8 +202,8 @@ const COLORS = [
   ['#a855f7','фиолетовый'],['#111827','чёрный'],['#ffffff','белый']
 ];
 const HINTS = {
-  pin: 'Клик по отверстию — поставить пин, повторный клик — удалить.',
-  via: 'Клик по отверстию — поставить переходное отверстие, повторный клик — удалить.',
+  pin: 'Клик — поставить/убрать пин. Зажать ЛКМ и потянуть — выделить прямоугольник пинов.',
+  via: 'Клик — поставить/убрать переход. Зажать ЛКМ и потянуть — выделить прямоугольник пинов.',
   wire: 'Клик — начало, дальше клики задают углы, клик по пину или Enter — конец. От перехода до перехода — обратная сторона. Tab — угол, Esc — отмена.',
   erase: 'Клик по пину, переходу или дорожке — удалить.',
   select: 'Клик — выбрать, Ctrl/Shift+клик — добавить, тянуть пустое место — рамка. Перетаскивание — перенести всю группу с концами дорожек.',
@@ -233,6 +233,8 @@ let selection = {pads:[],wires:[]};
 let pending = null;
 let drag = null;
 let marquee = null;
+let clickAction = null;
+let dragStart = null;
 let pan = null;
 let spaceHeld = false;
 let hover = null;
@@ -696,6 +698,27 @@ function setTool(tool){
   syncUI(); save();
 }
 
+function startPadDrag(p,e){
+  drag = {ids:selection.pads.slice(), startX:p.x, startY:p.y, snap:snapshot(), origins:new Map(), moved:false};
+  for (const id of drag.ids){
+    const pp = getPad(id);
+    if (pp) drag.origins.set(id,{x:pp.x,y:pp.y});
+  }
+  try { svg.setPointerCapture(e.pointerId); } catch(err){}
+}
+
+function runClickAction(a){
+  const pad = padAt(a.x,a.y);
+  if (a.tool==='erase'){
+    if (pad) deletePad(pad.id);
+    else {
+      const w = wireAtPoint(a.rx,a.ry,0.45);
+      if (w) deleteWire(w.id);
+    }
+  } else if (pad) deletePad(pad.id);
+  else addPad(a.x,a.y,a.tool);
+}
+
 function onPointerDown(e){
   if (e.button===1 || spaceHeld || state.tool==='pan'){
     pan = {sx:e.clientX, sy:e.clientY, vx:view.x, vy:view.y, id:e.pointerId};
@@ -710,19 +733,12 @@ function onPointerDown(e){
   const p = clientToGrid(e);
   const pad = padAt(p.x,p.y);
 
-  if (state.tool==='pin' || state.tool==='via'){
-    if (pad) deletePad(pad.id); else addPad(p.x,p.y,state.tool);
-    renderContent(); renderProps();
-    return;
-  }
-
-  if (state.tool==='erase'){
-    if (pad) deletePad(pad.id);
-    else {
-      const w = wireAtPoint(p.rx,p.ry,0.45);
-      if (w) deleteWire(w.id);
-    }
-    renderContent(); renderProps();
+  if (state.tool==='pin' || state.tool==='via' || state.tool==='erase'){
+    const additive = e.ctrlKey || e.metaKey || e.shiftKey;
+    clickAction = {tool:state.tool, x:p.x, y:p.y, rx:p.rx, ry:p.ry, additive};
+    dragStart = {x:p.rx,y:p.ry};
+    if (!additive && pad && isSelected('pads',pad.id)) startPadDrag(p,e);
+    else try { svg.setPointerCapture(e.pointerId); } catch(err){}
     return;
   }
 
@@ -731,14 +747,7 @@ function onPointerDown(e){
     if (pad){
       if (additive) toggleSelection('pads',pad.id);
       else if (!isSelected('pads',pad.id)) selectOnly('pads',pad.id);
-      if (isSelected('pads',pad.id)){
-        drag = {ids:selection.pads.slice(), startX:p.x, startY:p.y, snap:snapshot(), origins:new Map(), moved:false};
-        for (const id of drag.ids){
-          const pp = getPad(id);
-          if (pp) drag.origins.set(id,{x:pp.x,y:pp.y});
-        }
-        svg.setPointerCapture(e.pointerId);
-      }
+      if (isSelected('pads',pad.id)) startPadDrag(p,e);
     } else {
       const w = wireAtPoint(p.rx,p.ry,0.45);
       if (w){
@@ -784,6 +793,17 @@ function onPointerMove(e){
   $('coord').textContent = `OTB ${p.x+1}:${p.y+1}  ·  ${(p.x*PITCH).toFixed(2)} / ${(p.y*PITCH).toFixed(2)} мм`;
   renderHover();
 
+  if (clickAction && dragStart && !drag && !marquee){
+    if (Math.hypot(p.rx-dragStart.x, p.ry-dragStart.y) > 0.35){
+      marquee = {
+        x1:clamp(Math.round(dragStart.x),0,state.cols-1),
+        y1:clamp(Math.round(dragStart.y),0,state.rows-1),
+        x2:p.x, y2:p.y, additive:clickAction.additive
+      };
+      clickAction = null; dragStart = null;
+    }
+  }
+
   if (drag){
     let dx = p.x - drag.startX, dy = p.y - drag.startY;
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
@@ -816,9 +836,22 @@ function onPointerUp(e){
     try { svg.releasePointerCapture(e.pointerId); } catch(err){}
   }
   if (drag){
+    const d = drag;
     drag = null;
+    const a = clickAction;
+    clickAction = null; dragStart = null;
     try { svg.releasePointerCapture(e.pointerId); } catch(err){}
+    if (!d.moved && a) runClickAction(a);
     renderContent(); renderProps(); save();
+    return;
+  }
+  if (clickAction){
+    const a = clickAction;
+    clickAction = null; dragStart = null;
+    try { svg.releasePointerCapture(e.pointerId); } catch(err){}
+    runClickAction(a);
+    renderContent(); renderProps(); save();
+    return;
   }
   if (marquee){
     const x1 = Math.min(marquee.x1,marquee.x2), x2 = Math.max(marquee.x1,marquee.x2);
