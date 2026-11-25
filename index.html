@@ -107,6 +107,7 @@ input[type=file]{display:none}
             .sel{fill:none;stroke:#0284c7;stroke-width:0.05}
             .preview-line{fill:none;stroke-width:0.14;stroke-dasharray:0.3 0.2;stroke-linecap:round;stroke-linejoin:round}
             .hover-line{stroke:#0284c7;stroke-width:0.03;opacity:.5}
+            .marquee{fill:rgba(2,132,199,.12);stroke:#0284c7;stroke-width:0.04;stroke-dasharray:0.14 0.1}
           </style>
         </defs>
         <g id="gridLayer"></g>
@@ -197,7 +198,7 @@ const STORAGE_KEY = 'proto-board-editor-v1';
 const PITCH = 2.54;
 const COLORS = [
   ['#e11d48','красный'],['#f97316','оранжевый'],['#eab308','жёлтый'],
-  ['#22c55e','зелёный'],['#06b6d4','голубой'],['#3b82f6','синий'],
+  ['#22c55e','зелёный'],['#0ea5e9','голубой'],['#3b82f6','синий'],
   ['#a855f7','фиолетовый'],['#111827','чёрный'],['#ffffff','белый']
 ];
 const HINTS = {
@@ -205,7 +206,7 @@ const HINTS = {
   via: 'Клик по отверстию — поставить переходное отверстие, повторный клик — удалить.',
   wire: 'Клик — начало, дальше клики задают углы, клик по пину или Enter — конец. От перехода до перехода — обратная сторона. Tab — угол, Esc — отмена.',
   erase: 'Клик по пину, переходу или дорожке — удалить.',
-  select: 'Клик — выбрать, перетаскивание — перенести пин/переход вместе с концами дорожек.',
+  select: 'Клик — выбрать, Ctrl/Shift+клик — добавить, тянуть пустое место — рамка. Перетаскивание — перенести всю группу с концами дорожек.',
   pan: 'Перетаскивайте поле. Колесо — масштаб.'
 };
 
@@ -220,7 +221,7 @@ const uiLayer = $('uiLayer');
 const defaults = () => ({
   version: 2, cols: 30, rows: 22,
   pads: [], wires: [], nextId: 1, nextPad: 1, nextVia: 1,
-  tool: 'pin', labelTpl: 'P#', viaTpl: 'V#', color: '#e11d48', wireSide: 'front', hFirst: true
+  tool: 'pin', labelTpl: 'P#', viaTpl: 'V#', color: '#e11d48', backColor: '#0ea5e9', wireSide: 'front', hFirst: true
 });
 
 let state = defaults();
@@ -228,10 +229,10 @@ let view = {x:-2,y:-2,w:36,h:26};
 let baseW = 36;
 let history = [];
 let hIndex = -1;
-let selected = null;
+let selection = {pads:[],wires:[]};
 let pending = null;
-let dragPadId = null;
-let dragSnap = null;
+let drag = null;
+let marquee = null;
 let pan = null;
 let spaceHeld = false;
 let hover = null;
@@ -258,14 +259,49 @@ function commitSnapshot(snap){
 function commit(){ commitSnapshot(snapshot()); }
 function initHistory(){ history = [snapshot()]; hIndex = 0; }
 
+function clearSelection(){ selection = {pads:[],wires:[]}; }
+function selectionCount(){ return selection.pads.length + selection.wires.length; }
+function isSelected(kind,id){ return selection[kind].includes(id); }
+function toggleSelection(kind,id){
+  const arr = selection[kind], i = arr.indexOf(id);
+  if (i>=0) arr.splice(i,1); else arr.push(id);
+}
+function selectOnly(kind,id){
+  selection = {pads:kind==='pads'?[id]:[], wires:kind==='wires'?[id]:[]};
+}
+function selectedPads(){
+  return selection.pads.map(getPad).filter(Boolean);
+}
+function deleteSelection(){
+  if (!selectionCount()) return;
+  commitSnapshot(snapshot());
+  const pids = selection.pads.slice(), wids = selection.wires.slice();
+  state.pads = state.pads.filter(p => !pids.includes(p.id));
+  state.wires = state.wires.filter(w => !wids.includes(w.id));
+  clearSelection(); save();
+}
+function convertSelection(){
+  const pads = selectedPads();
+  if (!pads.length) return;
+  commitSnapshot(snapshot());
+  const toVia = pads.some(p => p.kind!=='via');
+  for (const p of pads) p.kind = toVia ? 'via' : 'pin';
+  for (const w of state.wires){
+    if (w.autoBack && (selection.pads.includes(w.startPadId) || selection.pads.includes(w.endPadId))){
+      w.side = 'front'; w.autoBack = false;
+    }
+  }
+  save();
+}
+
 function undo(){
   if (hIndex <= 0) return;
-  hIndex--; restore(history[hIndex]); pending = null; selected = null;
+  hIndex--; restore(history[hIndex]); pending = null; clearSelection();
   renderAll(); save();
 }
 function redo(){
   if (hIndex >= history.length-1) return;
-  hIndex++; restore(history[hIndex]); pending = null; selected = null;
+  hIndex++; restore(history[hIndex]); pending = null; clearSelection();
   renderAll(); save();
 }
 
@@ -289,6 +325,7 @@ function normalize(o){
     delete w.type;
   }
   if (!['front','back','jumper'].includes(s.wireSide)) s.wireSide = s.wireType==='jumper' ? 'jumper' : 'front';
+  if (!COLORS.some(c => c[0]===s.backColor)) s.backColor = '#0ea5e9';
   if (!['pin','via','wire','erase','select','pan'].includes(s.tool)) s.tool = 'pin';
   return s;
 }
@@ -346,25 +383,34 @@ function addPad(x,y,kind){
 }
 function deletePad(id){
   state.pads = state.pads.filter(p => p.id!==id);
-  if (selected && selected.type==='pad' && selected.id===id) selected = null;
+  selection.pads = selection.pads.filter(pid => pid!==id);
   commit(); save();
 }
 function deleteWire(id){
   state.wires = state.wires.filter(w => w.id!==id);
-  if (selected && selected.type==='wire' && selected.id===id) selected = null;
+  selection.wires = selection.wires.filter(wid => wid!==id);
   commit(); save();
 }
-function movePad(id,x,y){
-  const p = getPad(id);
-  if (!p || (p.x===x && p.y===y)) return;
-  const ox = p.x, oy = p.y;
-  p.x = x; p.y = y;
+function movePads(updates){
+  const map = new Map();
+  for (const u of updates){
+    const p = getPad(u.id);
+    if (p) map.set(p.x+','+p.y,[u.x,u.y]);
+  }
+  let changed = false;
+  for (const u of updates){
+    const p = getPad(u.id);
+    if (p && (p.x!==u.x || p.y!==u.y)){ p.x = u.x; p.y = u.y; changed = true; }
+  }
+  if (!changed) return;
   for (const w of state.wires){
     for (const pt of w.points){
-      if (pt[0]===ox && pt[1]===oy){ pt[0]=x; pt[1]=y; }
+      const to = map.get(pt[0]+','+pt[1]);
+      if (to){ pt[0] = to[0]; pt[1] = to[1]; }
     }
   }
 }
+function movePad(id,x,y){ movePads([{id,x,y}]); }
 
 function appendRoute(x,y){
   const pts = pending.points;
@@ -380,9 +426,10 @@ function finishWire(endPadId){
     const sp = pending.startPadId ? getPad(pending.startPadId) : null;
     const ep = endPadId ? getPad(endPadId) : null;
     const autoBack = !!(sp && ep && sp.kind==='via' && ep.kind==='via');
+    const side = autoBack ? 'back' : state.wireSide;
     state.wires.push({
-      id: state.nextId++, color: state.color,
-      side: autoBack ? 'back' : state.wireSide, autoBack,
+      id: state.nextId++, color: side==='back' ? state.backColor : state.color,
+      side, autoBack,
       points: pending.points.slice(), startPadId: pending.startPadId || null, endPadId: endPadId || null
     });
     commit(); save();
@@ -438,22 +485,22 @@ function renderContent(){
     const isBack = w.side==='back';
     const isJumper = w.side==='jumper';
     const dash = isBack ? ' stroke-dasharray="0.16 0.14"' : isJumper ? ' stroke-dasharray="0.55 0.3"' : '';
-    const width = isJumper ? 0.2 : 0.24;
+    const width = isBack ? 0.11 : isJumper ? 0.14 : 0.16;
     const halo = isJumper ? `<polyline class="wire-halo" points="${pts}"/>` : '';
-    const band = isBack ? `<polyline class="wire-back-band" points="${pts}" stroke="${w.color}" stroke-width="0.44"/>` : '';
+    const band = isBack ? `<polyline class="wire-back-band" points="${pts}" stroke="${w.color}" stroke-width="0.26"/>` : '';
     const outline = (!isBack && w.color==='#ffffff') ? `<polyline class="wire-outline" points="${pts}"/>` : '';
     const backMark = isBack ? (() => {
       const m = polylineMid(w.points);
       return `<text class="back-label" x="${m[0]}" y="${m[1]-0.14}" text-anchor="middle">обр.</text>`;
     })() : '';
-    const sel = selected && selected.type==='wire' && selected.id===w.id
+    const sel = isSelected('wires',w.id)
       ? `<polyline class="sel" points="${pts}"/>` : '';
     return `<g class="wire" data-id="${w.id}">${band}${halo}${outline}` +
       `<polyline class="wire-line" points="${pts}" stroke="${w.color}" stroke-width="${width}"${dash}/>${backMark}${sel}</g>`;
   }).join('');
 
   padLayer.innerHTML = state.pads.map(p => {
-    const sel = selected && selected.type==='pad' && selected.id===p.id
+    const sel = isSelected('pads',p.id)
       ? `<circle class="sel" r="0.6"/>` : '';
     const lp = labelPlacement(p);
     const via = p.kind==='via'
@@ -492,14 +539,19 @@ function renderPreview(){
 }
 
 function renderHover(){
-  if (!hover){
-    uiLayer.innerHTML = '';
-    return;
+  let html = '';
+  if (marquee){
+    const x = Math.min(marquee.x1,marquee.x2), y = Math.min(marquee.y1,marquee.y2);
+    const w = Math.abs(marquee.x2-marquee.x1)+1, h = Math.abs(marquee.y2-marquee.y1)+1;
+    html += `<rect class="marquee" x="${x-0.5}" y="${y-0.5}" width="${w}" height="${h}"/>`;
   }
-  uiLayer.innerHTML =
-    `<line class="hover-line" x1="${hover.x}" y1="-0.5" x2="${hover.x}" y2="${state.rows-0.5}"/>` +
-    `<line class="hover-line" x1="-0.5" y1="${hover.y}" x2="${state.cols-0.5}" y2="${hover.y}"/>` +
-    `<circle cx="${hover.x}" cy="${hover.y}" r="0.25" fill="none" stroke="#0284c7" stroke-width="0.04"/>`;
+  if (hover){
+    html +=
+      `<line class="hover-line" x1="${hover.x}" y1="-0.5" x2="${hover.x}" y2="${state.rows-0.5}"/>` +
+      `<line class="hover-line" x1="-0.5" y1="${hover.y}" x2="${state.cols-0.5}" y2="${hover.y}"/>` +
+      `<circle cx="${hover.x}" cy="${hover.y}" r="0.25" fill="none" stroke="#0284c7" stroke-width="0.04"/>`;
+  }
+  uiLayer.innerHTML = html;
 }
 
 function colorOptions(value){
@@ -509,13 +561,25 @@ function colorOptions(value){
 
 function renderProps(){
   const el = $('props');
-  if (!selected){
-    el.innerHTML = '<div class="hint">Ничего не выбрано</div>';
+  const np = selection.pads.length, nw = selection.wires.length;
+  if (!np && !nw){
+    el.innerHTML = '<div class="hint">Ничего не выбрано. Ctrl/Shift+клик или рамка — несколько пинов.</div>';
     return;
   }
-  if (selected.type==='pad'){
-    const p = getPad(selected.id);
-    if (!p){ selected=null; renderProps(); return; }
+  if (np > 1 || (np && nw)){
+    const toVia = selectedPads().some(p => p.kind!=='via');
+    el.innerHTML =
+      `<div class="stat"><span>Пинов/переходов</span><b>${np}</b></div>` +
+      (nw ? `<div class="stat"><span>Дорожек</span><b>${nw}</b></div>` : '') +
+      `<button class="wide" id="propConvert" style="margin-top:8px">Сделать ${toVia?'переходами':'пинами'}</button>` +
+      `<button class="wide danger" id="propDelete" style="margin-top:6px">Удалить выбранное</button>`;
+    $('propConvert').addEventListener('click', () => { convertSelection(); renderContent(); renderProps(); });
+    $('propDelete').addEventListener('click', () => { deleteSelection(); renderContent(); renderProps(); });
+    return;
+  }
+  if (np === 1){
+    const p = getPad(selection.pads[0]);
+    if (!p){ clearSelection(); renderProps(); return; }
     el.innerHTML =
       `<div class="row"><label>Метка</label><input id="propLabel" type="text" value="${esc(p.label)}"></div>` +
       `<div class="row"><label>Цвет</label><select id="propColor">${colorOptions(p.color)}</select></div>` +
@@ -531,40 +595,38 @@ function renderProps(){
       const snap = snapshot(); p.color = e.target.value;
       commitSnapshot(snap); renderContent(); renderProps(); save();
     });
-    $('propConvert').addEventListener('click', () => {
-      const snap = snapshot();
-      p.kind = p.kind==='via' ? 'pin' : 'via';
-      for (const w of state.wires){
-        if ((w.startPadId===p.id || w.endPadId===p.id) && w.autoBack){
-          w.side = 'front'; w.autoBack = false;
-        }
-      }
-      commitSnapshot(snap); renderContent(); renderProps(); save();
-    });
-    $('propDelete').addEventListener('click', () => { deletePad(p.id); renderContent(); renderProps(); });
-  } else {
-    const w = getWire(selected.id);
-    if (!w){ selected=null; renderProps(); return; }
-    el.innerHTML =
-      `<div class="row"><label>Цвет</label><select id="propColor">${colorOptions(w.color)}</select></div>` +
-      `<div class="row"><label>Сторона</label><select id="propType">` +
-        `<option value="front"${w.side==='front'?' selected':''}>Лицевая</option>` +
-        `<option value="back"${w.side==='back'?' selected':''}>Обратная</option>` +
-        `<option value="jumper"${w.side==='jumper'?' selected':''}>Перемычка</option></select></div>` +
-      `<div class="stat"><span>Длина</span><b>${wireLength(w).toFixed(1)} мм</b></div>` +
-      `<div class="stat"><span>Сегментов</span><b>${w.points.length-1}</b></div>` +
-      (w.autoBack ? '<div class="hint">Обратная сторона задана переходами.</div>' : '') +
-      `<button class="wide danger" id="propDelete" style="margin-top:8px">Удалить дорожку</button>`;
-    $('propColor').addEventListener('change', e => {
-      const snap = snapshot(); w.color = e.target.value;
-      commitSnapshot(snap); renderContent(); renderProps(); save();
-    });
-    $('propType').addEventListener('change', e => {
-      const snap = snapshot(); w.side = e.target.value; w.autoBack = false;
-      commitSnapshot(snap); renderContent(); renderProps(); save();
-    });
-    $('propDelete').addEventListener('click', () => { deleteWire(w.id); renderContent(); renderProps(); });
+    $('propConvert').addEventListener('click', () => { convertSelection(); renderContent(); renderProps(); });
+    $('propDelete').addEventListener('click', () => { deleteSelection(); renderContent(); renderProps(); });
+    return;
   }
+  if (nw > 1){
+    el.innerHTML =
+      `<div class="stat"><span>Выбрано дорожек</span><b>${nw}</b></div>` +
+      `<button class="wide danger" id="propDelete" style="margin-top:8px">Удалить выбранные</button>`;
+    $('propDelete').addEventListener('click', () => { deleteSelection(); renderContent(); renderProps(); });
+    return;
+  }
+  const w = getWire(selection.wires[0]);
+  if (!w){ clearSelection(); renderProps(); return; }
+  el.innerHTML =
+    `<div class="row"><label>Цвет</label><select id="propColor">${colorOptions(w.color)}</select></div>` +
+    `<div class="row"><label>Сторона</label><select id="propType">` +
+      `<option value="front"${w.side==='front'?' selected':''}>Лицевая</option>` +
+      `<option value="back"${w.side==='back'?' selected':''}>Обратная</option>` +
+      `<option value="jumper"${w.side==='jumper'?' selected':''}>Перемычка</option></select></div>` +
+    `<div class="stat"><span>Длина</span><b>${wireLength(w).toFixed(1)} мм</b></div>` +
+    `<div class="stat"><span>Сегментов</span><b>${w.points.length-1}</b></div>` +
+    (w.autoBack ? '<div class="hint">Обратная сторона задана переходами.</div>' : '') +
+    `<button class="wide danger" id="propDelete" style="margin-top:8px">Удалить дорожку</button>`;
+  $('propColor').addEventListener('change', e => {
+    const snap = snapshot(); w.color = e.target.value;
+    commitSnapshot(snap); renderContent(); renderProps(); save();
+  });
+  $('propType').addEventListener('change', e => {
+    const snap = snapshot(); w.side = e.target.value; w.autoBack = false;
+    commitSnapshot(snap); renderContent(); renderProps(); save();
+  });
+  $('propDelete').addEventListener('click', () => { deleteSelection(); renderContent(); renderProps(); });
 }
 
 function syncUI(){
@@ -573,6 +635,8 @@ function syncUI(){
   svg.dataset.tool = state.tool;
   $('palette').innerHTML = COLORS.map(([hex,name]) =>
     `<button class="swatch${hex===state.color?' active':''}" data-color="${hex}" title="${name}" style="background:${hex}"></button>`).join('');
+  $('backPalette').innerHTML = COLORS.map(([hex,name]) =>
+    `<button class="swatch${hex===state.backColor?' active':''}" data-back-color="${hex}" title="${name}" style="background:${hex}"></button>`).join('');
   $('wireSide').value = state.wireSide;
   $('cornerBtn').textContent = state.hFirst ? 'Сначала вправо → вниз' : 'Сначала вниз → вправо';
   $('labelTpl').value = state.labelTpl;
@@ -663,17 +727,28 @@ function onPointerDown(e){
   }
 
   if (state.tool==='select'){
+    const additive = e.ctrlKey || e.metaKey || e.shiftKey;
     if (pad){
-      selected = {type:'pad',id:pad.id};
-      dragPadId = pad.id;
-      dragSnap = snapshot();
-      svg.setPointerCapture(e.pointerId);
+      if (additive) toggleSelection('pads',pad.id);
+      else if (!isSelected('pads',pad.id)) selectOnly('pads',pad.id);
+      if (isSelected('pads',pad.id)){
+        drag = {ids:selection.pads.slice(), startX:p.x, startY:p.y, snap:snapshot(), origins:new Map(), moved:false};
+        for (const id of drag.ids){
+          const pp = getPad(id);
+          if (pp) drag.origins.set(id,{x:pp.x,y:pp.y});
+        }
+        svg.setPointerCapture(e.pointerId);
+      }
     } else {
       const w = wireAtPoint(p.rx,p.ry,0.45);
-      selected = w ? {type:'wire',id:w.id} : null;
-      dragPadId = null; dragSnap = null;
+      if (w){
+        if (additive) toggleSelection('wires',w.id);
+        else selectOnly('wires',w.id);
+      } else if (!additive) clearSelection();
+      marquee = {x1:p.x,y1:p.y,x2:p.x,y2:p.y,additive};
+      svg.setPointerCapture(e.pointerId);
     }
-    renderContent(); renderProps();
+    renderContent(); renderProps(); renderHover();
     return;
   }
 
@@ -709,13 +784,26 @@ function onPointerMove(e){
   $('coord').textContent = `OTB ${p.x+1}:${p.y+1}  ·  ${(p.x*PITCH).toFixed(2)} / ${(p.y*PITCH).toFixed(2)} мм`;
   renderHover();
 
-  if (dragPadId){
-    const pad = getPad(dragPadId);
-    if (pad && (pad.x!==p.x || pad.y!==p.y)){
-      if (dragSnap){ commitSnapshot(dragSnap); dragSnap = null; }
-      movePad(dragPadId,p.x,p.y);
+  if (drag){
+    let dx = p.x - drag.startX, dy = p.y - drag.startY;
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const o of drag.origins.values()){
+      minX = Math.min(minX,o.x); maxX = Math.max(maxX,o.x);
+      minY = Math.min(minY,o.y); maxY = Math.max(maxY,o.y);
+    }
+    dx = clamp(dx,-minX,state.cols-1-maxX);
+    dy = clamp(dy,-minY,state.rows-1-maxY);
+    if (dx!==0 || dy!==0){
+      if (!drag.moved){ commitSnapshot(drag.snap); drag.moved = true; }
+      movePads(drag.ids.map(id => {
+        const o = drag.origins.get(id);
+        return {id, x:o.x+dx, y:o.y+dy};
+      }));
       renderContent();
     }
+  } else if (marquee){
+    marquee.x2 = p.x; marquee.y2 = p.y;
+    renderHover();
   } else if (pending){
     renderPreview();
   }
@@ -727,10 +815,24 @@ function onPointerUp(e){
     svg.classList.remove('grabbing');
     try { svg.releasePointerCapture(e.pointerId); } catch(err){}
   }
-  if (dragPadId){
-    dragPadId = null; dragSnap = null;
+  if (drag){
+    drag = null;
     try { svg.releasePointerCapture(e.pointerId); } catch(err){}
     renderContent(); renderProps(); save();
+  }
+  if (marquee){
+    const x1 = Math.min(marquee.x1,marquee.x2), x2 = Math.max(marquee.x1,marquee.x2);
+    const y1 = Math.min(marquee.y1,marquee.y2), y2 = Math.max(marquee.y1,marquee.y2);
+    const additive = marquee.additive;
+    const ids = state.pads.filter(p => p.x>=x1 && p.x<=x2 && p.y>=y1 && p.y<=y2).map(p => p.id);
+    if (additive){
+      for (const id of ids) if (!selection.pads.includes(id)) selection.pads.push(id);
+    } else {
+      selection.pads = ids; selection.wires = [];
+    }
+    marquee = null;
+    try { svg.releasePointerCapture(e.pointerId); } catch(err){}
+    renderHover(); renderContent(); renderProps();
   }
 }
 
@@ -744,7 +846,7 @@ function applyBoard(){
   for (const w of state.wires){
     for (const pt of w.points){ pt[0] = clamp(pt[0],0,c-1); pt[1] = clamp(pt[1],0,r-1); }
   }
-  pending = null; selected = null;
+  pending = null; clearSelection();
   renderAll(); fitBoard(); save();
 }
 
@@ -817,8 +919,8 @@ function loadDemo(){
   wire('#eab308','front',[[12,11],[16,11]]);
   wire('#e11d48','front',[[7,3],[19,3]],null,vcc,false);
   wire('#111827','front',[[7,8],[19,8],[19,12]],null,gnd,false);
-  wire('#e11d48','back',[[19,3],[19,12]],vcc,gnd,true);
-  selected = null; pending = null;
+  wire('#0ea5e9','back',[[19,3],[19,12]],vcc,gnd,true);
+  clearSelection(); pending = null;
   renderAll(); fitBoard(); save();
 }
 
@@ -836,6 +938,12 @@ $('palette').addEventListener('click', e => {
   state.color = b.dataset.color;
   syncUI(); save();
   renderPreview();
+});
+$('backPalette').addEventListener('click', e => {
+  const b = e.target.closest('[data-back-color]');
+  if (!b) return;
+  state.backColor = b.dataset.backColor;
+  syncUI(); save();
 });
 $('wireSide').addEventListener('change', e => { state.wireSide = e.target.value; save(); });
 $('cornerBtn').addEventListener('click', () => { state.hFirst = !state.hFirst; syncUI(); save(); });
@@ -859,7 +967,7 @@ $('fileInput').addEventListener('change', e => {
       if (!Array.isArray(o.pads) || !Array.isArray(o.wires)) throw new Error('bad file');
       commitSnapshot(snapshot());
       state = normalize(o);
-      selected = null; pending = null;
+      clearSelection(); pending = null;
       renderAll(); fitBoard(); save();
     } catch(err){ alert('Не удалось прочитать файл разводки.'); }
   };
@@ -874,7 +982,7 @@ $('clearBtn').addEventListener('click', () => {
   if (!confirm('Удалить все пины, переходы и дорожки?')) return;
   commitSnapshot(snapshot());
   state.pads = []; state.wires = []; state.nextId = 1; state.nextPad = 1; state.nextVia = 1;
-  selected = null; pending = null;
+  clearSelection(); pending = null;
   renderAll(); save();
 });
 
@@ -882,7 +990,7 @@ svg.addEventListener('pointerdown', onPointerDown);
 svg.addEventListener('pointermove', onPointerMove);
 svg.addEventListener('pointerup', onPointerUp);
 svg.addEventListener('pointercancel', onPointerUp);
-svg.addEventListener('pointerleave', () => { if (!pan && !dragPadId){ hover=null; renderHover(); } });
+svg.addEventListener('pointerleave', () => { if (!pan && !drag && !marquee){ hover=null; renderHover(); } });
 svg.addEventListener('contextmenu', e => { e.preventDefault(); if (pending) finishWire(null); });
 svg.addEventListener('wheel', e => { e.preventDefault(); zoomAt(e.deltaY<0?1.12:1/1.12,e.clientX,e.clientY); },{passive:false});
 
@@ -893,16 +1001,24 @@ document.addEventListener('keydown', e => {
     if (key==='z'){ e.preventDefault(); e.shiftKey?redo():undo(); }
     else if (key==='y'){ e.preventDefault(); redo(); }
     else if (key==='s'){ e.preventDefault(); exportJSON(); }
+    else if (key==='a'){
+      e.preventDefault();
+      selection = {pads:state.pads.map(p=>p.id), wires:[]};
+      renderContent(); renderProps();
+    }
     return;
   }
   if (e.code==='Space'){ spaceHeld = true; svg.classList.add('grabbing'); e.preventDefault(); return; }
-  if (key==='escape'){ pending=null; selected=null; renderPreview(); renderContent(); renderProps(); return; }
+  if (key==='escape'){
+    pending=null; clearSelection(); drag=null; marquee=null;
+    renderPreview(); renderContent(); renderHover(); renderProps(); return;
+  }
   if (key==='enter'){ if (pending) finishWire(null); return; }
   if (key==='tab'){ e.preventDefault(); state.hFirst=!state.hFirst; syncUI(); save(); return; }
   if (key==='delete' || key==='backspace'){
     e.preventDefault();
-    if (!selected) return;
-    if (selected.type==='pad') deletePad(selected.id); else deleteWire(selected.id);
+    if (!selectionCount()) return;
+    deleteSelection();
     renderContent(); renderProps();
     return;
   }
