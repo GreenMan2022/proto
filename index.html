@@ -1,0 +1,933 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Редактор разводки макетной платы 2.54 мм</title>
+<style>
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:#0f172a;color:#e2e8f0;font:13px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;overflow:hidden}
+.app{display:flex;flex-direction:column;height:100vh}
+.topbar{display:flex;align-items:center;gap:14px;padding:8px 12px;background:#1e293b;border-bottom:1px solid #334155;flex-wrap:wrap}
+.brand{font-weight:700;letter-spacing:.06em;white-space:nowrap}
+.brand span{color:#38bdf8;font-weight:500;font-size:11px;margin-left:4px}
+.group{display:flex;align-items:center;gap:4px;padding:3px;background:#0f172a;border:1px solid #334155;border-radius:8px}
+button,select,input{font:inherit;color:inherit}
+button{background:#334155;border:1px solid transparent;border-radius:5px;padding:5px 9px;cursor:pointer;white-space:nowrap}
+button:hover{background:#475569}
+button.active{background:#0284c7;border-color:#38bdf8;color:#fff}
+button.ghost{background:transparent}
+button.danger{background:#7f1d1d}
+button.danger:hover{background:#991b1b}
+.group button{padding:4px 8px}
+.spacer{flex:1}
+#zoomLabel{min-width:46px;text-align:center;color:#94a3b8;font-variant-numeric:tabular-nums}
+.main{display:flex;flex:1;min-height:0}
+.canvas-wrap{flex:1;position:relative;min-width:0;background:#e2e8f0;overflow:hidden}
+#board{width:100%;height:100%;display:block;touch-action:none;cursor:crosshair}
+#board[data-tool="pan"],#board.grabbing{cursor:grab}
+#board.grabbing{cursor:grabbing}
+.sidebar{width:262px;flex:0 0 262px;background:#1e293b;border-left:1px solid #334155;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:10px}
+.card{background:#0f172a;border:1px solid #334155;border-radius:8px;padding:9px}
+.card h3{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:#94a3b8}
+.row{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.row:last-child{margin-bottom:0}
+.row label{color:#94a3b8;min-width:62px}
+input[type=number],input[type=text],select{background:#1e293b;border:1px solid #334155;border-radius:5px;padding:4px 6px;width:100%;min-width:0}
+input[type=number]{width:72px}
+input:focus,select:focus{outline:1px solid #38bdf8;border-color:#38bdf8}
+.wide{width:100%}
+.palette{display:flex;flex-wrap:wrap;gap:5px}
+.swatch{width:24px;height:24px;border-radius:5px;border:2px solid #475569;padding:0}
+.swatch.active{outline:2px solid #38bdf8;outline-offset:2px;border-color:#0f172a}
+.tools-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px}
+.tools-grid button{text-align:left}
+.stack{display:flex;flex-direction:column;gap:5px}
+.hint{color:#64748b;font-size:11px}
+.stat{display:flex;justify-content:space-between;color:#94a3b8;font-size:12px}
+.stat b{color:#e2e8f0;font-weight:600}
+.statusbar{display:flex;gap:16px;align-items:center;padding:6px 12px;background:#1e293b;border-top:1px solid #334155;color:#94a3b8;font-size:12px;flex-wrap:wrap}
+#statusHint{color:#e2e8f0}
+#coord{margin-left:auto;font-variant-numeric:tabular-nums}
+input[type=file]{display:none}
+@media print{
+ body{background:#fff;overflow:visible}
+ .topbar,.sidebar,.statusbar{display:none!important}
+ .app,.main,.canvas-wrap{display:block;height:auto;width:auto;overflow:visible;background:#fff}
+ #board{width:100%;height:auto}
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">ПРОТО<span>шаг 2.54 мм</span></div>
+    <div class="group" id="toolButtons">
+      <button data-tool="pin" title="P — поставить/убрать пин">Пин</button>
+      <button data-tool="via" title="T — поставить/убрать переходное отверстие">Переход</button>
+      <button data-tool="wire" title="W — провести дорожку">Дорожка</button>
+      <button data-tool="erase" title="E — стереть">Стереть</button>
+      <button data-tool="select" title="V — выбор и перенос">Выбор</button>
+      <button data-tool="pan" title="H — панорама">Панорама</button>
+    </div>
+    <div class="group">
+      <button id="undoBtn" title="Ctrl+Z">Отмена</button>
+      <button id="redoBtn" title="Ctrl+Y">Повтор</button>
+    </div>
+    <div class="spacer"></div>
+    <div class="group">
+      <button id="zoomOut">−</button>
+      <span id="zoomLabel">100%</span>
+      <button id="zoomIn">+</button>
+      <button id="fitBtn">Вписать</button>
+    </div>
+  </header>
+
+  <div class="main">
+    <div class="canvas-wrap">
+      <svg id="board" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <pattern id="holePattern" x="-0.5" y="-0.5" width="1" height="1" patternUnits="userSpaceOnUse">
+            <circle cx="0.5" cy="0.5" r="0.13" fill="#94a3b8"/>
+          </pattern>
+          <style>
+            .board{fill:#fffdf7;stroke:#94a3b8;stroke-width:0.05}
+            .major{fill:none;stroke:#cbd5e1;stroke-width:0.035;stroke-dasharray:0.12 0.18}
+            .ruler-label{font-family:system-ui,sans-serif;font-size:0.38px;fill:#64748b}
+            .pad-ring{stroke:#78350f;stroke-width:0.05}
+            .pad-hole{fill:#0f172a}
+            .pad-label{font-family:system-ui,sans-serif;font-size:0.42px;fill:#0f172a;paint-order:stroke;stroke:#fffdf7;stroke-width:0.13;stroke-linejoin:round}
+            .wire-line{fill:none;stroke-linecap:round;stroke-linejoin:round}
+            .wire-halo{fill:none;stroke:#fffdf7;stroke-width:0.3;stroke-linecap:round;stroke-linejoin:round}
+            .wire-outline{fill:none;stroke:#64748b;stroke-width:0.22;stroke-linecap:round;stroke-linejoin:round}
+            .wire-back-band{fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:.16}
+            .via-inner{fill:none;stroke:#fffdf7;stroke-width:0.05}
+            .back-label{font-family:system-ui,sans-serif;font-size:0.26px;fill:#475569;paint-order:stroke;stroke:#fffdf7;stroke-width:0.08;stroke-linejoin:round}
+            .sel{fill:none;stroke:#0284c7;stroke-width:0.05}
+            .preview-line{fill:none;stroke-width:0.14;stroke-dasharray:0.3 0.2;stroke-linecap:round;stroke-linejoin:round}
+            .hover-line{stroke:#0284c7;stroke-width:0.03;opacity:.5}
+          </style>
+        </defs>
+        <g id="gridLayer"></g>
+        <g id="wireLayer"></g>
+        <g id="previewLayer"></g>
+        <g id="padLayer"></g>
+        <g id="uiLayer" pointer-events="none"></g>
+      </svg>
+    </div>
+
+    <aside class="sidebar">
+      <div class="card">
+        <h3>Плата</h3>
+        <div class="row"><label for="colsIn">Столбцы</label><input id="colsIn" type="number" min="2" max="200" value="30"></div>
+        <div class="row"><label for="rowsIn">Ряды</label><input id="rowsIn" type="number" min="2" max="200" value="22"></div>
+        <button class="wide" id="applyBoard">Применить размер</button>
+        <div class="stat" style="margin-top:8px"><span>Размер, мм</span><b id="boardMm">—</b></div>
+        <div class="hint">Шаг сетки 2.54 мм, отверстия в узлах.</div>
+      </div>
+
+      <div class="card">
+        <h3>Метки пинов</h3>
+        <div class="row"><label for="labelTpl">Пин</label><input id="labelTpl" type="text" value="P#" placeholder="P#"></div>
+        <div class="row"><label for="viaTpl">Переход</label><input id="viaTpl" type="text" value="V#" placeholder="V#"></div>
+        <div class="hint">«#» заменяется номером: U1.# → U1.1, U1.2…</div>
+      </div>
+
+      <div class="card">
+        <h3>Цвет / цепь</h3>
+        <div class="palette" id="palette"></div>
+        <div class="hint" style="margin-top:8px">Обратная сторона — свой цвет:</div>
+        <div class="palette" id="backPalette"></div>
+        <div class="row" style="margin-top:8px">
+          <label>Сторона</label>
+          <select id="wireSide">
+            <option value="front">Лицевая — сплошная</option>
+            <option value="back">Обратная — точечная</option>
+            <option value="jumper">Перемычка — штрих</option>
+          </select>
+        </div>
+        <div class="row"><label>Угол</label><button id="cornerBtn" class="wide">Сначала вправо → вниз</button></div>
+        <div class="hint">Дорожка от перехода до перехода автоматически считается обратной.</div>
+      </div>
+
+      <div class="card">
+        <h3>Выбрано</h3>
+        <div id="props"><div class="hint">Ничего не выбрано</div></div>
+      </div>
+
+      <div class="card">
+        <h3>Файл</h3>
+        <div class="stack">
+          <div class="row" style="gap:4px">
+            <button id="saveBtn" style="flex:1">Сохранить</button>
+            <button id="openBtn" style="flex:1">Открыть</button>
+          </div>
+          <input id="fileInput" type="file" accept=".json,application/json">
+          <button id="svgBtn">Экспорт SVG</button>
+          <button id="pngBtn">Экспорт PNG</button>
+          <button id="printBtn">Печать</button>
+          <button id="demoBtn">Загрузить пример</button>
+          <button id="clearBtn" class="danger">Очистить плату</button>
+        </div>
+        <div class="hint">Автосохранение в браузере включено.</div>
+      </div>
+
+      <div class="card">
+        <div class="stat"><span>Пинов</span><b id="padCount">0</b></div>
+        <div class="stat"><span>Переходов</span><b id="viaCount">0</b></div>
+        <div class="stat"><span>Дорожек</span><b id="wireCount">0</b></div>
+        <div class="stat"><span>На обратной</span><b id="backCount">0</b></div>
+      </div>
+    </aside>
+  </div>
+
+  <footer class="statusbar">
+    <span id="statusHint"></span>
+    <span id="coord"></span>
+  </footer>
+</div>
+
+<script>
+(function(){
+'use strict';
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const STORAGE_KEY = 'proto-board-editor-v1';
+const PITCH = 2.54;
+const COLORS = [
+  ['#e11d48','красный'],['#f97316','оранжевый'],['#eab308','жёлтый'],
+  ['#22c55e','зелёный'],['#06b6d4','голубой'],['#3b82f6','синий'],
+  ['#a855f7','фиолетовый'],['#111827','чёрный'],['#ffffff','белый']
+];
+const HINTS = {
+  pin: 'Клик по отверстию — поставить пин, повторный клик — удалить.',
+  via: 'Клик по отверстию — поставить переходное отверстие, повторный клик — удалить.',
+  wire: 'Клик — начало, дальше клики задают углы, клик по пину или Enter — конец. От перехода до перехода — обратная сторона. Tab — угол, Esc — отмена.',
+  erase: 'Клик по пину, переходу или дорожке — удалить.',
+  select: 'Клик — выбрать, перетаскивание — перенести пин/переход вместе с концами дорожек.',
+  pan: 'Перетаскивайте поле. Колесо — масштаб.'
+};
+
+const $ = id => document.getElementById(id);
+const svg = $('board');
+const gridLayer = $('gridLayer');
+const wireLayer = $('wireLayer');
+const padLayer = $('padLayer');
+const previewLayer = $('previewLayer');
+const uiLayer = $('uiLayer');
+
+const defaults = () => ({
+  version: 2, cols: 30, rows: 22,
+  pads: [], wires: [], nextId: 1, nextPad: 1, nextVia: 1,
+  tool: 'pin', labelTpl: 'P#', viaTpl: 'V#', color: '#e11d48', wireSide: 'front', hFirst: true
+});
+
+let state = defaults();
+let view = {x:-2,y:-2,w:36,h:26};
+let baseW = 36;
+let history = [];
+let hIndex = -1;
+let selected = null;
+let pending = null;
+let dragPadId = null;
+let dragSnap = null;
+let pan = null;
+let spaceHeld = false;
+let hover = null;
+
+const clamp = (v,a,b) => Math.max(a,Math.min(b,v));
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const snapshot = () => JSON.stringify({cols:state.cols,rows:state.rows,pads:state.pads,wires:state.wires,nextId:state.nextId,nextPad:state.nextPad,nextVia:state.nextVia});
+
+function restore(snap){
+  const o = JSON.parse(snap);
+  state.cols = o.cols; state.rows = o.rows;
+  state.pads = o.pads; state.wires = o.wires;
+  state.nextId = o.nextId; state.nextPad = o.nextPad; state.nextVia = o.nextVia || 1;
+}
+
+function commitSnapshot(snap){
+  history = history.slice(0,hIndex+1);
+  history.push(snap);
+  if (history.length > 80) history.shift();
+  hIndex = history.length-1;
+  syncUI();
+}
+
+function commit(){ commitSnapshot(snapshot()); }
+function initHistory(){ history = [snapshot()]; hIndex = 0; }
+
+function undo(){
+  if (hIndex <= 0) return;
+  hIndex--; restore(history[hIndex]); pending = null; selected = null;
+  renderAll(); save();
+}
+function redo(){
+  if (hIndex >= history.length-1) return;
+  hIndex++; restore(history[hIndex]); pending = null; selected = null;
+  renderAll(); save();
+}
+
+function save(){
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch(e){}
+}
+function normalize(o){
+  if (o.wireType && !o.wireSide) o.wireSide = o.wireType==='jumper' ? 'jumper' : 'front';
+  const s = Object.assign(defaults(),o);
+  s.cols = clamp(Number(s.cols)||30,2,200);
+  s.rows = clamp(Number(s.rows)||22,2,200);
+  s.nextId = Number(s.nextId)||1;
+  s.nextPad = Number(s.nextPad)||1;
+  s.nextVia = Number(s.nextVia)||1;
+  for (const p of s.pads){
+    if (p.kind!=='via') p.kind = 'pin';
+  }
+  for (const w of s.wires){
+    if (!w.side) w.side = w.type==='jumper' ? 'jumper' : (w.type==='back' ? 'back' : 'front');
+    if (!['front','back','jumper'].includes(w.side)) w.side = 'front';
+    delete w.type;
+  }
+  if (!['front','back','jumper'].includes(s.wireSide)) s.wireSide = s.wireType==='jumper' ? 'jumper' : 'front';
+  if (!['pin','via','wire','erase','select','pan'].includes(s.tool)) s.tool = 'pin';
+  return s;
+}
+function load(){
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    const o = JSON.parse(raw);
+    if (!o || !Array.isArray(o.pads) || !Array.isArray(o.wires)) return;
+    state = normalize(o);
+  } catch(e){}
+}
+
+function padAt(x,y){ return state.pads.find(p => p.x===x && p.y===y) || null; }
+function getPad(id){ return state.pads.find(p => p.id===id) || null; }
+function getWire(id){ return state.wires.find(w => w.id===id) || null; }
+
+function distToSeg(px,py,ax,ay,bx,by){
+  const dx = bx-ax, dy = by-ay;
+  const len2 = dx*dx+dy*dy;
+  let t = len2 ? ((px-ax)*dx+(py-ay)*dy)/len2 : 0;
+  t = clamp(t,0,1);
+  return Math.hypot(px-(ax+t*dx), py-(ay+t*dy));
+}
+function wireAtPoint(x,y,radius){
+  let best = null, bestD = Infinity;
+  for (const w of state.wires){
+    for (let i=1;i<w.points.length;i++){
+      const a = w.points[i-1], b = w.points[i];
+      const d = distToSeg(x,y,a[0],a[1],b[0],b[1]);
+      if (d < bestD){ bestD = d; best = w; }
+    }
+  }
+  return bestD <= radius ? best : null;
+}
+function wireLength(w){
+  let n = 0;
+  for (let i=1;i<w.points.length;i++){
+    n += Math.hypot(w.points[i][0]-w.points[i-1][0], w.points[i][1]-w.points[i-1][1]);
+  }
+  return n*PITCH;
+}
+
+function makeLabel(kind){
+  const via = kind==='via';
+  const t = (via ? state.viaTpl : state.labelTpl) || (via ? 'V#' : 'P#');
+  const n = via ? state.nextVia++ : state.nextPad++;
+  return t.includes('#') ? t.replace('#',String(n)) : t + n;
+}
+
+function addPad(x,y,kind){
+  const k = kind==='via' ? 'via' : 'pin';
+  state.pads.push({id:state.nextId++, x, y, kind:k, label:makeLabel(k), color:state.color});
+  commit(); save();
+}
+function deletePad(id){
+  state.pads = state.pads.filter(p => p.id!==id);
+  if (selected && selected.type==='pad' && selected.id===id) selected = null;
+  commit(); save();
+}
+function deleteWire(id){
+  state.wires = state.wires.filter(w => w.id!==id);
+  if (selected && selected.type==='wire' && selected.id===id) selected = null;
+  commit(); save();
+}
+function movePad(id,x,y){
+  const p = getPad(id);
+  if (!p || (p.x===x && p.y===y)) return;
+  const ox = p.x, oy = p.y;
+  p.x = x; p.y = y;
+  for (const w of state.wires){
+    for (const pt of w.points){
+      if (pt[0]===ox && pt[1]===oy){ pt[0]=x; pt[1]=y; }
+    }
+  }
+}
+
+function appendRoute(x,y){
+  const pts = pending.points;
+  const last = pts[pts.length-1];
+  if (x!==last[0] && y!==last[1]){
+    pts.push(state.hFirst ? [x,last[1]] : [last[0],y]);
+  }
+  pts.push([x,y]);
+}
+function finishWire(endPadId){
+  if (!pending) return;
+  if (pending.points.length > 1){
+    const sp = pending.startPadId ? getPad(pending.startPadId) : null;
+    const ep = endPadId ? getPad(endPadId) : null;
+    const autoBack = !!(sp && ep && sp.kind==='via' && ep.kind==='via');
+    state.wires.push({
+      id: state.nextId++, color: state.color,
+      side: autoBack ? 'back' : state.wireSide, autoBack,
+      points: pending.points.slice(), startPadId: pending.startPadId || null, endPadId: endPadId || null
+    });
+    commit(); save();
+  }
+  pending = null;
+  renderPreview(); renderContent(); renderProps();
+}
+
+function polylineMid(points){
+  let total = 0;
+  const lengths = [];
+  for (let i=1;i<points.length;i++){
+    const l = Math.hypot(points[i][0]-points[i-1][0], points[i][1]-points[i-1][1]);
+    lengths.push(l); total += l;
+  }
+  let rest = total/2;
+  for (let i=0;i<lengths.length;i++){
+    if (rest<=lengths[i] && lengths[i]>0){
+      const t = rest/lengths[i];
+      const a = points[i], b = points[i+1];
+      return [a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t];
+    }
+    rest -= lengths[i];
+  }
+  return points[0];
+}
+
+function renderGrid(){
+  const c = state.cols, r = state.rows;
+  let major = '';
+  for (let x=4;x<c;x+=5) major += `M ${x+0.5} -0.5 V ${r-0.5} `;
+  for (let y=4;y<r;y+=5) major += `M -0.5 ${y+0.5} H ${c-0.5} `;
+  let rulers = '';
+  for (let x=0;x<c;x+=5) rulers += `<text class="ruler-label" x="${x}" y="-1.15" text-anchor="middle">${x+1}</text>`;
+  for (let y=0;y<r;y+=5) rulers += `<text class="ruler-label" x="-1.15" y="${y+0.14}" text-anchor="middle">${y+1}</text>`;
+  gridLayer.innerHTML =
+    `<rect class="board" x="-0.75" y="-0.75" width="${c+1.5}" height="${r+1.5}" rx="0.25"/>` +
+    `<rect x="-0.5" y="-0.5" width="${c}" height="${r}" fill="url(#holePattern)"/>` +
+    `<path class="major" d="${major}"/>` + rulers;
+}
+
+function labelPlacement(p){
+  const free = (x,y) => !padAt(x,y);
+  if (free(p.x,p.y-1)) return {x:0,y:-0.62,anchor:'middle'};
+  if (free(p.x,p.y+1)) return {x:0,y:0.98,anchor:'middle'};
+  if (free(p.x-1,p.y)) return {x:-0.56,y:0.14,anchor:'end'};
+  return {x:0.56,y:0.14,anchor:'start'};
+}
+
+function renderContent(){
+  wireLayer.innerHTML = state.wires.map(w => {
+    const pts = w.points.map(p => p.join(',')).join(' ');
+    const isBack = w.side==='back';
+    const isJumper = w.side==='jumper';
+    const dash = isBack ? ' stroke-dasharray="0.16 0.14"' : isJumper ? ' stroke-dasharray="0.55 0.3"' : '';
+    const width = isJumper ? 0.2 : 0.24;
+    const halo = isJumper ? `<polyline class="wire-halo" points="${pts}"/>` : '';
+    const band = isBack ? `<polyline class="wire-back-band" points="${pts}" stroke="${w.color}" stroke-width="0.44"/>` : '';
+    const outline = (!isBack && w.color==='#ffffff') ? `<polyline class="wire-outline" points="${pts}"/>` : '';
+    const backMark = isBack ? (() => {
+      const m = polylineMid(w.points);
+      return `<text class="back-label" x="${m[0]}" y="${m[1]-0.14}" text-anchor="middle">обр.</text>`;
+    })() : '';
+    const sel = selected && selected.type==='wire' && selected.id===w.id
+      ? `<polyline class="sel" points="${pts}"/>` : '';
+    return `<g class="wire" data-id="${w.id}">${band}${halo}${outline}` +
+      `<polyline class="wire-line" points="${pts}" stroke="${w.color}" stroke-width="${width}"${dash}/>${backMark}${sel}</g>`;
+  }).join('');
+
+  padLayer.innerHTML = state.pads.map(p => {
+    const sel = selected && selected.type==='pad' && selected.id===p.id
+      ? `<circle class="sel" r="0.6"/>` : '';
+    const lp = labelPlacement(p);
+    const via = p.kind==='via'
+      ? `<circle class="via-inner" r="0.29"/>` : '';
+    return `<g class="pad" data-id="${p.id}" transform="translate(${p.x} ${p.y})">` +
+      `${sel}<circle class="pad-ring" r="0.44" fill="${p.color}"/>${via}` +
+      `<circle class="pad-hole" r="0.15"/>` +
+      `<text class="pad-label" x="${lp.x}" y="${lp.y}" text-anchor="${lp.anchor}">${esc(p.label)}</text></g>`;
+  }).join('');
+}
+
+function previewRoute(){
+  if (!pending) return [];
+  const pts = pending.points.slice();
+  if (!hover) return pts;
+  const last = pts[pts.length-1];
+  const x = hover.x, y = hover.y;
+  if (x===last[0] && y===last[1]) return pts;
+  if (x!==last[0] && y!==last[1]) pts.push(state.hFirst ? [x,last[1]] : [last[0],y]);
+  pts.push([x,y]);
+  return pts;
+}
+
+function renderPreview(){
+  const route = previewRoute();
+  if (!route.length){
+    previewLayer.innerHTML = '';
+    return;
+  }
+  const pts = route.map(p => p.join(',')).join(' ');
+  const dots = pending.points.map(p =>
+    `<circle cx="${p[0]}" cy="${p[1]}" r="0.11" fill="${state.color}"/>`).join('');
+  const cursor = hover ? `<circle cx="${hover.x}" cy="${hover.y}" r="0.09" fill="none" stroke="${state.color}" stroke-width="0.05"/>` : '';
+  previewLayer.innerHTML =
+    `<polyline class="preview-line" points="${pts}" stroke="${state.color}"/>${dots}${cursor}`;
+}
+
+function renderHover(){
+  if (!hover){
+    uiLayer.innerHTML = '';
+    return;
+  }
+  uiLayer.innerHTML =
+    `<line class="hover-line" x1="${hover.x}" y1="-0.5" x2="${hover.x}" y2="${state.rows-0.5}"/>` +
+    `<line class="hover-line" x1="-0.5" y1="${hover.y}" x2="${state.cols-0.5}" y2="${hover.y}"/>` +
+    `<circle cx="${hover.x}" cy="${hover.y}" r="0.25" fill="none" stroke="#0284c7" stroke-width="0.04"/>`;
+}
+
+function colorOptions(value){
+  return COLORS.map(([hex,name]) =>
+    `<option value="${hex}"${hex===value?' selected':''}>${name}</option>`).join('');
+}
+
+function renderProps(){
+  const el = $('props');
+  if (!selected){
+    el.innerHTML = '<div class="hint">Ничего не выбрано</div>';
+    return;
+  }
+  if (selected.type==='pad'){
+    const p = getPad(selected.id);
+    if (!p){ selected=null; renderProps(); return; }
+    el.innerHTML =
+      `<div class="row"><label>Метка</label><input id="propLabel" type="text" value="${esc(p.label)}"></div>` +
+      `<div class="row"><label>Цвет</label><select id="propColor">${colorOptions(p.color)}</select></div>` +
+      `<div class="stat"><span>Тип</span><b>${p.kind==='via'?'Переход':'Пин'}</b></div>` +
+      `<div class="stat"><span>Отверстие</span><b>${p.x+1} / ${p.y+1}</b></div>` +
+      `<button class="wide" id="propConvert" style="margin-top:8px">Сделать ${p.kind==='via'?'пином':'переходом'}</button>` +
+      `<button class="wide danger" id="propDelete" style="margin-top:6px">Удалить</button>`;
+    $('propLabel').addEventListener('change', e => {
+      const snap = snapshot(); p.label = e.target.value || 'P' + p.id;
+      commitSnapshot(snap); renderContent(); renderProps(); save();
+    });
+    $('propColor').addEventListener('change', e => {
+      const snap = snapshot(); p.color = e.target.value;
+      commitSnapshot(snap); renderContent(); renderProps(); save();
+    });
+    $('propConvert').addEventListener('click', () => {
+      const snap = snapshot();
+      p.kind = p.kind==='via' ? 'pin' : 'via';
+      for (const w of state.wires){
+        if ((w.startPadId===p.id || w.endPadId===p.id) && w.autoBack){
+          w.side = 'front'; w.autoBack = false;
+        }
+      }
+      commitSnapshot(snap); renderContent(); renderProps(); save();
+    });
+    $('propDelete').addEventListener('click', () => { deletePad(p.id); renderContent(); renderProps(); });
+  } else {
+    const w = getWire(selected.id);
+    if (!w){ selected=null; renderProps(); return; }
+    el.innerHTML =
+      `<div class="row"><label>Цвет</label><select id="propColor">${colorOptions(w.color)}</select></div>` +
+      `<div class="row"><label>Сторона</label><select id="propType">` +
+        `<option value="front"${w.side==='front'?' selected':''}>Лицевая</option>` +
+        `<option value="back"${w.side==='back'?' selected':''}>Обратная</option>` +
+        `<option value="jumper"${w.side==='jumper'?' selected':''}>Перемычка</option></select></div>` +
+      `<div class="stat"><span>Длина</span><b>${wireLength(w).toFixed(1)} мм</b></div>` +
+      `<div class="stat"><span>Сегментов</span><b>${w.points.length-1}</b></div>` +
+      (w.autoBack ? '<div class="hint">Обратная сторона задана переходами.</div>' : '') +
+      `<button class="wide danger" id="propDelete" style="margin-top:8px">Удалить дорожку</button>`;
+    $('propColor').addEventListener('change', e => {
+      const snap = snapshot(); w.color = e.target.value;
+      commitSnapshot(snap); renderContent(); renderProps(); save();
+    });
+    $('propType').addEventListener('change', e => {
+      const snap = snapshot(); w.side = e.target.value; w.autoBack = false;
+      commitSnapshot(snap); renderContent(); renderProps(); save();
+    });
+    $('propDelete').addEventListener('click', () => { deleteWire(w.id); renderContent(); renderProps(); });
+  }
+}
+
+function syncUI(){
+  document.querySelectorAll('[data-tool]').forEach(b =>
+    b.classList.toggle('active', b.dataset.tool===state.tool));
+  svg.dataset.tool = state.tool;
+  $('palette').innerHTML = COLORS.map(([hex,name]) =>
+    `<button class="swatch${hex===state.color?' active':''}" data-color="${hex}" title="${name}" style="background:${hex}"></button>`).join('');
+  $('wireSide').value = state.wireSide;
+  $('cornerBtn').textContent = state.hFirst ? 'Сначала вправо → вниз' : 'Сначала вниз → вправо';
+  $('labelTpl').value = state.labelTpl;
+  $('viaTpl').value = state.viaTpl;
+  $('colsIn').value = state.cols;
+  $('rowsIn').value = state.rows;
+  $('boardMm').textContent = `${((state.cols-1)*PITCH).toFixed(1)} × ${((state.rows-1)*PITCH).toFixed(1)}`;
+  $('padCount').textContent = state.pads.filter(p => p.kind!=='via').length;
+  $('viaCount').textContent = state.pads.filter(p => p.kind==='via').length;
+  $('wireCount').textContent = state.wires.length;
+  $('backCount').textContent = state.wires.filter(w => w.side==='back').length;
+  $('statusHint').textContent = HINTS[state.tool];
+  $('undoBtn').disabled = hIndex<=0;
+  $('redoBtn').disabled = hIndex>=history.length-1;
+}
+
+function updateViewBox(){
+  svg.setAttribute('viewBox', `${view.x} ${view.y} ${view.w} ${view.h}`);
+  $('zoomLabel').textContent = Math.round(baseW/view.w*100) + '%';
+}
+
+function fitBoard(){
+  const rect = svg.getBoundingClientRect();
+  const aspect = (rect.width && rect.height) ? rect.width/rect.height : 1.4;
+  let w = state.cols-1+4.4, h = state.rows-1+4.4;
+  if (w/h > aspect) h = w/aspect; else w = h*aspect;
+  const cx = (state.cols-1)/2, cy = (state.rows-1)/2;
+  view = {x:cx-w/2, y:cy-h/2, w, h};
+  baseW = w;
+  updateViewBox();
+}
+
+function zoomAt(factor,clientX,clientY){
+  const rect = svg.getBoundingClientRect();
+  const cx = clientX===undefined ? rect.left+rect.width/2 : clientX;
+  const cy = clientY===undefined ? rect.top+rect.height/2 : clientY;
+  const fx = clamp((cx-rect.left)/rect.width,0,1);
+  const fy = clamp((cy-rect.top)/rect.height,0,1);
+  const wx = view.x+fx*view.w, wy = view.y+fy*view.h;
+  view.w = clamp(view.w/factor, 4, state.cols*8);
+  view.h = view.w*rect.height/rect.width;
+  view.x = wx-fx*view.w;
+  view.y = wy-fy*view.h;
+  updateViewBox();
+}
+
+function clientToGrid(e){
+  const pt = svg.createSVGPoint();
+  pt.x = e.clientX; pt.y = e.clientY;
+  const p = pt.matrixTransform(svg.getScreenCTM().inverse());
+  return {x:clamp(Math.round(p.x),0,state.cols-1), y:clamp(Math.round(p.y),0,state.rows-1), rx:p.x, ry:p.y};
+}
+
+function setTool(tool){
+  state.tool = tool;
+  if (pending && tool!=='wire'){ pending=null; renderPreview(); }
+  syncUI(); save();
+}
+
+function onPointerDown(e){
+  if (e.button===1 || spaceHeld || state.tool==='pan'){
+    pan = {sx:e.clientX, sy:e.clientY, vx:view.x, vy:view.y, id:e.pointerId};
+    svg.classList.add('grabbing');
+    svg.setPointerCapture(e.pointerId);
+    e.preventDefault();
+    return;
+  }
+  if (e.button===2) return;
+  if (e.button!==0) return;
+
+  const p = clientToGrid(e);
+  const pad = padAt(p.x,p.y);
+
+  if (state.tool==='pin' || state.tool==='via'){
+    if (pad) deletePad(pad.id); else addPad(p.x,p.y,state.tool);
+    renderContent(); renderProps();
+    return;
+  }
+
+  if (state.tool==='erase'){
+    if (pad) deletePad(pad.id);
+    else {
+      const w = wireAtPoint(p.rx,p.ry,0.45);
+      if (w) deleteWire(w.id);
+    }
+    renderContent(); renderProps();
+    return;
+  }
+
+  if (state.tool==='select'){
+    if (pad){
+      selected = {type:'pad',id:pad.id};
+      dragPadId = pad.id;
+      dragSnap = snapshot();
+      svg.setPointerCapture(e.pointerId);
+    } else {
+      const w = wireAtPoint(p.rx,p.ry,0.45);
+      selected = w ? {type:'wire',id:w.id} : null;
+      dragPadId = null; dragSnap = null;
+    }
+    renderContent(); renderProps();
+    return;
+  }
+
+  if (state.tool==='wire'){
+    if (!pending){
+      pending = {points:[[p.x,p.y]], startPadId:pad?pad.id:null};
+      renderPreview();
+      return;
+    }
+    const last = pending.points[pending.points.length-1];
+    if (pad && (p.x!==last[0] || p.y!==last[1])){
+      appendRoute(p.x,p.y);
+      finishWire(pad.id);
+    } else if (p.x===last[0] && p.y===last[1]){
+      finishWire(null);
+    } else {
+      appendRoute(p.x,p.y);
+      renderPreview();
+    }
+  }
+}
+
+function onPointerMove(e){
+  if (pan){
+    const rect = svg.getBoundingClientRect();
+    view.x = pan.vx - (e.clientX-pan.sx)*view.w/rect.width;
+    view.y = pan.vy - (e.clientY-pan.sy)*view.h/rect.height;
+    updateViewBox();
+    return;
+  }
+  const p = clientToGrid(e);
+  hover = {x:p.x,y:p.y};
+  $('coord').textContent = `OTB ${p.x+1}:${p.y+1}  ·  ${(p.x*PITCH).toFixed(2)} / ${(p.y*PITCH).toFixed(2)} мм`;
+  renderHover();
+
+  if (dragPadId){
+    const pad = getPad(dragPadId);
+    if (pad && (pad.x!==p.x || pad.y!==p.y)){
+      if (dragSnap){ commitSnapshot(dragSnap); dragSnap = null; }
+      movePad(dragPadId,p.x,p.y);
+      renderContent();
+    }
+  } else if (pending){
+    renderPreview();
+  }
+}
+
+function onPointerUp(e){
+  if (pan){
+    pan = null;
+    svg.classList.remove('grabbing');
+    try { svg.releasePointerCapture(e.pointerId); } catch(err){}
+  }
+  if (dragPadId){
+    dragPadId = null; dragSnap = null;
+    try { svg.releasePointerCapture(e.pointerId); } catch(err){}
+    renderContent(); renderProps(); save();
+  }
+}
+
+function applyBoard(){
+  const c = clamp(parseInt($('colsIn').value,10)||30,2,200);
+  const r = clamp(parseInt($('rowsIn').value,10)||22,2,200);
+  if (c===state.cols && r===state.rows) return;
+  commitSnapshot(snapshot());
+  state.cols = c; state.rows = r;
+  for (const p of state.pads){ p.x = clamp(p.x,0,c-1); p.y = clamp(p.y,0,r-1); }
+  for (const w of state.wires){
+    for (const pt of w.points){ pt[0] = clamp(pt[0],0,c-1); pt[1] = clamp(pt[1],0,r-1); }
+  }
+  pending = null; selected = null;
+  renderAll(); fitBoard(); save();
+}
+
+function svgString(){
+  const clone = svg.cloneNode(true);
+  clone.removeAttribute('id');
+  clone.setAttribute('xmlns',SVG_NS);
+  clone.setAttribute('viewBox',`-1.6 -1.9 ${state.cols+2.6} ${state.rows+3.0}`);
+  clone.setAttribute('width',`${((state.cols+2.6)*PITCH).toFixed(2)}mm`);
+  clone.setAttribute('height',`${((state.rows+3.0)*PITCH).toFixed(2)}mm`);
+  const p = clone.querySelector('#previewLayer'); if (p) p.remove();
+  const u = clone.querySelector('#uiLayer'); if (u) u.remove();
+  return '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(clone);
+}
+
+function download(blob,name){
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href),2000);
+}
+
+function exportJSON(){
+  const data = JSON.stringify(state,null,2);
+  download(new Blob([data],{type:'application/json'}),'perfboard-layout.json');
+}
+function exportSVG(){
+  download(new Blob([svgString()],{type:'image/svg+xml;charset=utf-8'}),'perfboard-layout.svg');
+}
+function exportPNG(){
+  const url = URL.createObjectURL(new Blob([svgString()],{type:'image/svg+xml;charset=utf-8'}));
+  const img = new Image();
+  img.onload = () => {
+    const scale = 8;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round((state.cols+2.6)*PITCH*scale);
+    canvas.height = Math.round((state.rows+3.0)*PITCH*scale);
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fffdf7';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.drawImage(img,0,0,canvas.width,canvas.height);
+    canvas.toBlob(b => { if (b) download(b,'perfboard-layout.png'); URL.revokeObjectURL(url); },'image/png');
+  };
+  img.onerror = () => URL.revokeObjectURL(url);
+  img.src = url;
+}
+
+function loadDemo(){
+  commitSnapshot(snapshot());
+  state.cols = 24; state.rows = 16;
+  state.pads = []; state.wires = []; state.nextId = 1; state.nextPad = 1; state.nextVia = 1;
+  const defs = [
+    [3,3,'U1.1','#e11d48','pin'],[7,3,'U1.2','#e11d48','pin'],
+    [3,8,'U1.3','#22c55e','pin'],[7,8,'U1.4','#22c55e','pin'],
+    [12,5,'R1.1','#3b82f6','pin'],[16,5,'R1.2','#3b82f6','pin'],
+    [12,11,'C1.1','#eab308','pin'],[16,11,'C1.2','#eab308','pin'],
+    [19,3,'VCC','#e11d48','via'],[19,12,'GND','#111827','via']
+  ];
+  for (const [x,y,label,color,kind] of defs){
+    state.pads.push({id:state.nextId++,x,y,label,color,kind});
+  }
+  const vcc = state.pads.find(p=>p.label==='VCC').id;
+  const gnd = state.pads.find(p=>p.label==='GND').id;
+  const wire = (color,side,points,startPadId,endPadId,autoBack) =>
+    state.wires.push({id:state.nextId++,color,side,points,startPadId:startPadId||null,endPadId:endPadId||null,autoBack:!!autoBack});
+  wire('#e11d48','front',[[3,3],[3,5],[7,5],[7,3]]);
+  wire('#22c55e','front',[[3,8],[3,10],[7,10],[7,8]]);
+  wire('#3b82f6','jumper',[[12,5],[14,5],[14,8],[16,8],[16,5]]);
+  wire('#eab308','front',[[12,11],[16,11]]);
+  wire('#e11d48','front',[[7,3],[19,3]],null,vcc,false);
+  wire('#111827','front',[[7,8],[19,8],[19,12]],null,gnd,false);
+  wire('#e11d48','back',[[19,3],[19,12]],vcc,gnd,true);
+  selected = null; pending = null;
+  renderAll(); fitBoard(); save();
+}
+
+function renderAll(){
+  renderGrid(); renderContent(); renderPreview(); renderHover();
+  renderProps(); syncUI(); updateViewBox();
+}
+
+document.querySelectorAll('[data-tool]').forEach(b =>
+  b.addEventListener('click', () => setTool(b.dataset.tool)));
+
+$('palette').addEventListener('click', e => {
+  const b = e.target.closest('[data-color]');
+  if (!b) return;
+  state.color = b.dataset.color;
+  syncUI(); save();
+  renderPreview();
+});
+$('wireSide').addEventListener('change', e => { state.wireSide = e.target.value; save(); });
+$('cornerBtn').addEventListener('click', () => { state.hFirst = !state.hFirst; syncUI(); save(); });
+$('labelTpl').addEventListener('change', e => { state.labelTpl = e.target.value || 'P#'; save(); });
+$('viaTpl').addEventListener('change', e => { state.viaTpl = e.target.value || 'V#'; save(); });
+$('applyBoard').addEventListener('click', applyBoard);
+$('undoBtn').addEventListener('click', undo);
+$('redoBtn').addEventListener('click', redo);
+$('zoomIn').addEventListener('click', () => zoomAt(1.2));
+$('zoomOut').addEventListener('click', () => zoomAt(1/1.2));
+$('fitBtn').addEventListener('click', fitBoard);
+$('saveBtn').addEventListener('click', exportJSON);
+$('openBtn').addEventListener('click', () => $('fileInput').click());
+$('fileInput').addEventListener('change', e => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const o = JSON.parse(reader.result);
+      if (!Array.isArray(o.pads) || !Array.isArray(o.wires)) throw new Error('bad file');
+      commitSnapshot(snapshot());
+      state = normalize(o);
+      selected = null; pending = null;
+      renderAll(); fitBoard(); save();
+    } catch(err){ alert('Не удалось прочитать файл разводки.'); }
+  };
+  reader.readAsText(file);
+  e.target.value = '';
+});
+$('svgBtn').addEventListener('click', exportSVG);
+$('pngBtn').addEventListener('click', exportPNG);
+$('printBtn').addEventListener('click', () => window.print());
+$('demoBtn').addEventListener('click', loadDemo);
+$('clearBtn').addEventListener('click', () => {
+  if (!confirm('Удалить все пины, переходы и дорожки?')) return;
+  commitSnapshot(snapshot());
+  state.pads = []; state.wires = []; state.nextId = 1; state.nextPad = 1; state.nextVia = 1;
+  selected = null; pending = null;
+  renderAll(); save();
+});
+
+svg.addEventListener('pointerdown', onPointerDown);
+svg.addEventListener('pointermove', onPointerMove);
+svg.addEventListener('pointerup', onPointerUp);
+svg.addEventListener('pointercancel', onPointerUp);
+svg.addEventListener('pointerleave', () => { if (!pan && !dragPadId){ hover=null; renderHover(); } });
+svg.addEventListener('contextmenu', e => { e.preventDefault(); if (pending) finishWire(null); });
+svg.addEventListener('wheel', e => { e.preventDefault(); zoomAt(e.deltaY<0?1.12:1/1.12,e.clientX,e.clientY); },{passive:false});
+
+document.addEventListener('keydown', e => {
+  if (['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
+  const key = e.key.toLowerCase();
+  if (e.ctrlKey || e.metaKey){
+    if (key==='z'){ e.preventDefault(); e.shiftKey?redo():undo(); }
+    else if (key==='y'){ e.preventDefault(); redo(); }
+    else if (key==='s'){ e.preventDefault(); exportJSON(); }
+    return;
+  }
+  if (e.code==='Space'){ spaceHeld = true; svg.classList.add('grabbing'); e.preventDefault(); return; }
+  if (key==='escape'){ pending=null; selected=null; renderPreview(); renderContent(); renderProps(); return; }
+  if (key==='enter'){ if (pending) finishWire(null); return; }
+  if (key==='tab'){ e.preventDefault(); state.hFirst=!state.hFirst; syncUI(); save(); return; }
+  if (key==='delete' || key==='backspace'){
+    e.preventDefault();
+    if (!selected) return;
+    if (selected.type==='pad') deletePad(selected.id); else deleteWire(selected.id);
+    renderContent(); renderProps();
+    return;
+  }
+  if (key==='v') setTool('select');
+  else if (key==='p') setTool('pin');
+  else if (key==='t') setTool('via');
+  else if (key==='w') setTool('wire');
+  else if (key==='e') setTool('erase');
+  else if (key==='h') setTool('pan');
+  else if (key==='+' || key==='=') zoomAt(1.2);
+  else if (key==='-') zoomAt(1/1.2);
+});
+document.addEventListener('keyup', e => {
+  if (e.code==='Space'){ spaceHeld=false; if (!pan) svg.classList.remove('grabbing'); }
+});
+
+let savedView = null;
+window.addEventListener('beforeprint', () => { savedView = Object.assign({},view); fitBoard(); });
+window.addEventListener('afterprint', () => { if (savedView){ view = savedView; savedView=null; updateViewBox(); } });
+
+load();
+initHistory();
+renderAll();
+requestAnimationFrame(fitBoard);
+})();
+</script>
+</body>
+</html>
