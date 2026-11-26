@@ -28,6 +28,7 @@ button.danger:hover{background:#991b1b}
 #board{width:100%;height:100%;display:block;touch-action:none;cursor:crosshair}
 #board[data-tool="pan"],#board.grabbing{cursor:grab}
 #board.grabbing{cursor:grabbing}
+#board.label-hover,#board.label-drag{cursor:move}
 .sidebar{width:262px;flex:0 0 262px;background:#1e293b;border-left:1px solid #334155;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:10px}
 .card{background:#0f172a;border:1px solid #334155;border-radius:8px;padding:9px}
 .card h3{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:#94a3b8}
@@ -67,6 +68,7 @@ input[type=file]{display:none}
       <button data-tool="pin" title="P — поставить/убрать пин">Пин</button>
       <button data-tool="via" title="T — поставить/убрать переходное отверстие">Переход</button>
       <button data-tool="wire" title="W — провести дорожку">Дорожка</button>
+      <button data-tool="outline" title="O — нарисовать контур компонента">Контур</button>
       <button data-tool="erase" title="E — стереть">Стереть</button>
       <button data-tool="select" title="V — выбор и перенос">Выбор</button>
       <button data-tool="pan" title="H — панорама">Панорама</button>
@@ -74,6 +76,8 @@ input[type=file]{display:none}
     <div class="group">
       <button id="undoBtn" title="Ctrl+Z">Отмена</button>
       <button id="redoBtn" title="Ctrl+Y">Повтор</button>
+      <button id="rotateCCW" title="Shift+R — повернуть против часовой">↺</button>
+      <button id="rotateCW" title="R — повернуть по часовой">↻</button>
     </div>
     <div class="spacer"></div>
     <div class="group">
@@ -102,6 +106,9 @@ input[type=file]{display:none}
             .wire-halo{fill:none;stroke:#fffdf7;stroke-width:0.3;stroke-linecap:round;stroke-linejoin:round}
             .wire-outline{fill:none;stroke:#64748b;stroke-width:0.22;stroke-linecap:round;stroke-linejoin:round}
             .wire-back-band{fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:.16}
+            .outline-box{fill:rgba(2,132,199,.045);stroke-width:0.055;stroke-dasharray:0.24 0.14}
+            .outline-label{font-family:system-ui,sans-serif;font-size:0.46px;font-weight:600;paint-order:stroke;stroke:#fffdf7;stroke-width:0.16;stroke-linejoin:round}
+            .outline-draft{fill:rgba(2,132,199,.10);stroke:#0284c7;stroke-width:0.05;stroke-dasharray:0.14 0.1}
             .via-inner{fill:none;stroke:#fffdf7;stroke-width:0.05}
             .back-label{font-family:system-ui,sans-serif;font-size:0.26px;fill:#475569;paint-order:stroke;stroke:#fffdf7;stroke-width:0.08;stroke-linejoin:round}
             .sel{fill:none;stroke:#0284c7;stroke-width:0.05}
@@ -111,6 +118,7 @@ input[type=file]{display:none}
           </style>
         </defs>
         <g id="gridLayer"></g>
+        <g id="outlineLayer"></g>
         <g id="wireLayer"></g>
         <g id="previewLayer"></g>
         <g id="padLayer"></g>
@@ -124,8 +132,13 @@ input[type=file]{display:none}
         <div class="row"><label for="colsIn">Столбцы</label><input id="colsIn" type="number" min="2" max="200" value="30"></div>
         <div class="row"><label for="rowsIn">Ряды</label><input id="rowsIn" type="number" min="2" max="200" value="22"></div>
         <button class="wide" id="applyBoard">Применить размер</button>
+        <div class="row" style="gap:4px;margin-top:6px">
+          <button id="autoFrameBtn" style="flex:1">Рамка по схеме</button>
+          <button id="fitFrameBtn" style="flex:1">Подогнать поле</button>
+        </div>
+        <div class="row"><label for="frameMargin">Отступ рамки</label><input id="frameMargin" type="number" min="0" max="8" step="1" value="1"></div>
         <div class="stat" style="margin-top:8px"><span>Размер, мм</span><b id="boardMm">—</b></div>
-        <div class="hint">Шаг сетки 2.54 мм, отверстия в узлах.</div>
+        <div class="hint">Шаг сетки 2.54 мм. Рамка охватывает все объекты и подписи; подгонка использует выбранный контур.</div>
       </div>
 
       <div class="card">
@@ -133,6 +146,7 @@ input[type=file]{display:none}
         <div class="row"><label for="labelTpl">Пин</label><input id="labelTpl" type="text" value="P#" placeholder="P#"></div>
         <div class="row"><label for="viaTpl">Переход</label><input id="viaTpl" type="text" value="V#" placeholder="V#"></div>
         <div class="hint">«#» заменяется номером: U1.# → U1.1, U1.2…</div>
+        <div class="hint">Выделите пины и нажмите «Окантовать выделенное».</div>
       </div>
 
       <div class="card">
@@ -151,11 +165,31 @@ input[type=file]{display:none}
         <div class="row"><label>Угол</label><button id="cornerBtn" class="wide">Сначала вправо → вниз</button></div>
         <div class="hint">Дорожка от перехода до перехода автоматически считается обратной.</div>
       </div>
-
       <div class="card">
         <h3>Выбрано</h3>
+        <div class="row" style="gap:4px">
+          <button id="copyBtn" style="flex:1" title="Ctrl+C">Копировать</button>
+          <button id="pasteBtn" style="flex:1" title="Ctrl+V">Вставить</button>
+        </div>
         <div id="props"><div class="hint">Ничего не выбрано</div></div>
       </div>
+
+
+      <div class="card">
+        <h3>Библиотека компонентов</h3>
+        <select id="librarySelect" class="wide"></select>
+        <div class="hint" id="libraryInfo" style="margin-top:6px"></div>
+        <div class="stack" style="margin-top:8px">
+          <button class="wide" id="saveComponentBtn">Сохранить выделенное</button>
+          <button class="wide" id="insertComponentBtn">Вставить на плату</button>
+          <div class="row" style="gap:4px">
+            <button id="renameComponentBtn" style="flex:1">Переименовать</button>
+            <button id="deleteComponentBtn" class="danger" style="flex:1">Удалить</button>
+          </div>
+        </div>
+        <div class="hint" style="margin-top:8px">Сохраните пины, контур и провода как шаблон. Вставка — кликом по плате, Esc — отмена.</div>
+      </div>
+
 
       <div class="card">
         <h3>Файл</h3>
@@ -178,6 +212,7 @@ input[type=file]{display:none}
         <div class="stat"><span>Пинов</span><b id="padCount">0</b></div>
         <div class="stat"><span>Переходов</span><b id="viaCount">0</b></div>
         <div class="stat"><span>Дорожек</span><b id="wireCount">0</b></div>
+        <div class="stat"><span>Контуров</span><b id="outlineCount">0</b></div>
         <div class="stat"><span>На обратной</span><b id="backCount">0</b></div>
       </div>
     </aside>
@@ -195,6 +230,7 @@ input[type=file]{display:none}
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const STORAGE_KEY = 'proto-board-editor-v1';
+const LIBRARY_KEY = 'proto-component-library-v1';
 const PITCH = 2.54;
 const COLORS = [
   ['#e11d48','красный'],['#f97316','оранжевый'],['#eab308','жёлтый'],
@@ -205,22 +241,24 @@ const HINTS = {
   pin: 'Клик — поставить/убрать пин. Зажать ЛКМ и потянуть — выделить прямоугольник пинов.',
   via: 'Клик — поставить/убрать переход. Зажать ЛКМ и потянуть — выделить прямоугольник пинов.',
   wire: 'Клик — начало, дальше клики задают углы, клик по пину или Enter — конец. От перехода до перехода — обратная сторона. Tab — угол, Esc — отмена.',
-  erase: 'Клик по пину, переходу или дорожке — удалить.',
-  select: 'Клик — выбрать, Ctrl/Shift+клик — добавить, тянуть пустое место — рамка. Перетаскивание — перенести всю группу с концами дорожек.',
+  outline: 'Тяните ЛКМ, чтобы обвести компонент. Двойной клик по контуру — переименовать.',
+  erase: 'Клик по пину, переходу, дорожке или контуру — удалить.',
+  select: 'Клик — выбрать, Ctrl/Shift+клик — добавить, тянуть пустое место — рамка. Перетаскивание — перенести группу, а подпись контура — отдельно. Ctrl+C/Ctrl+V — копировать/вставить, стрелки — сдвиг подписи, R / Shift+R — поворот.',
   pan: 'Перетаскивайте поле. Колесо — масштаб.'
 };
 
 const $ = id => document.getElementById(id);
 const svg = $('board');
 const gridLayer = $('gridLayer');
+const outlineLayer = $('outlineLayer');
 const wireLayer = $('wireLayer');
 const padLayer = $('padLayer');
 const previewLayer = $('previewLayer');
 const uiLayer = $('uiLayer');
 
 const defaults = () => ({
-  version: 2, cols: 30, rows: 22,
-  pads: [], wires: [], nextId: 1, nextPad: 1, nextVia: 1,
+  version: 3, cols: 30, rows: 22,
+  pads: [], wires: [], outlines: [], nextId: 1, nextPad: 1, nextVia: 1,
   tool: 'pin', labelTpl: 'P#', viaTpl: 'V#', color: '#e11d48', backColor: '#0ea5e9', wireSide: 'front', hFirst: true
 });
 
@@ -229,24 +267,30 @@ let view = {x:-2,y:-2,w:36,h:26};
 let baseW = 36;
 let history = [];
 let hIndex = -1;
-let selection = {pads:[],wires:[]};
+let selection = {pads:[],wires:[],outlines:[]};
 let pending = null;
 let drag = null;
+let labelDrag = null;
 let marquee = null;
+let outlineDraft = null;
 let clickAction = null;
 let dragStart = null;
 let pan = null;
 let spaceHeld = false;
 let hover = null;
+let library = [];
+let nextCompId = 1;
+let clipboard = null;
+let placement = null;
 
 const clamp = (v,a,b) => Math.max(a,Math.min(b,v));
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const snapshot = () => JSON.stringify({cols:state.cols,rows:state.rows,pads:state.pads,wires:state.wires,nextId:state.nextId,nextPad:state.nextPad,nextVia:state.nextVia});
+const snapshot = () => JSON.stringify({cols:state.cols,rows:state.rows,pads:state.pads,wires:state.wires,outlines:state.outlines,nextId:state.nextId,nextPad:state.nextPad,nextVia:state.nextVia});
 
 function restore(snap){
   const o = JSON.parse(snap);
   state.cols = o.cols; state.rows = o.rows;
-  state.pads = o.pads; state.wires = o.wires;
+  state.pads = o.pads; state.wires = o.wires; state.outlines = o.outlines || [];
   state.nextId = o.nextId; state.nextPad = o.nextPad; state.nextVia = o.nextVia || 1;
 }
 
@@ -261,15 +305,15 @@ function commitSnapshot(snap){
 function commit(){ commitSnapshot(snapshot()); }
 function initHistory(){ history = [snapshot()]; hIndex = 0; }
 
-function clearSelection(){ selection = {pads:[],wires:[]}; }
-function selectionCount(){ return selection.pads.length + selection.wires.length; }
-function isSelected(kind,id){ return selection[kind].includes(id); }
+function clearSelection(){ selection = {pads:[],wires:[],outlines:[]}; }
+function selectionCount(){ return selection.pads.length + selection.wires.length + selection.outlines.length; }
+function isSelected(kind,id){ return (selection[kind] || []).includes(id); }
 function toggleSelection(kind,id){
   const arr = selection[kind], i = arr.indexOf(id);
   if (i>=0) arr.splice(i,1); else arr.push(id);
 }
 function selectOnly(kind,id){
-  selection = {pads:kind==='pads'?[id]:[], wires:kind==='wires'?[id]:[]};
+  selection = {pads:kind==='pads'?[id]:[], wires:kind==='wires'?[id]:[], outlines:kind==='outlines'?[id]:[]};
 }
 function selectedPads(){
   return selection.pads.map(getPad).filter(Boolean);
@@ -277,9 +321,10 @@ function selectedPads(){
 function deleteSelection(){
   if (!selectionCount()) return;
   commitSnapshot(snapshot());
-  const pids = selection.pads.slice(), wids = selection.wires.slice();
+  const pids = selection.pads.slice(), wids = selection.wires.slice(), oids = selection.outlines.slice();
   state.pads = state.pads.filter(p => !pids.includes(p.id));
   state.wires = state.wires.filter(w => !wids.includes(w.id));
+  state.outlines = state.outlines.filter(o => !oids.includes(o.id));
   clearSelection(); save();
 }
 function convertSelection(){
@@ -294,6 +339,147 @@ function convertSelection(){
     }
   }
   save();
+}
+
+function getOutline(id){ return state.outlines.find(o => o.id===id) || null; }
+function outlineBounds(o){
+  return {
+    minX:Math.min(o.x1,o.x2), maxX:Math.max(o.x1,o.x2),
+    minY:Math.min(o.y1,o.y2), maxY:Math.max(o.y1,o.y2)
+  };
+}
+function outlineAtPoint(x,y){
+  for (let i=state.outlines.length-1;i>=0;i--){
+    const b = outlineBounds(state.outlines[i]);
+    if (x>=b.minX-0.7 && x<=b.maxX+0.7 && y>=b.minY-1.2 && y<=b.maxY+0.7) return state.outlines[i];
+  }
+  return null;
+}
+const LABEL_BASE_Y = -0.78;
+function outlineLabelPos(o){
+  const b = outlineBounds(o);
+  return {x:b.minX+(o.labelDx||0), y:b.minY+LABEL_BASE_Y+(o.labelDy||0)};
+}
+function outlineLabelWidth(o){ return Math.max(0.6,String(o.label||'').length*0.27); }
+function outlineLabelAtPoint(x,y){
+  for (let i=state.outlines.length-1;i>=0;i--){
+    const o = state.outlines[i];
+    const p = outlineLabelPos(o);
+    const w = outlineLabelWidth(o);
+    if (x>=p.x-0.08 && x<=p.x+w && y>=p.y-0.42 && y<=p.y+0.12) return o;
+  }
+  return null;
+}
+function setLabelHover(on){ svg.classList.toggle('label-hover',!!on); }
+function padsInOutline(o){
+  const b = outlineBounds(o);
+  return state.pads.filter(p => p.x>=b.minX && p.x<=b.maxX && p.y>=b.minY && p.y<=b.maxY);
+}
+function createOutlineFromSelection(){
+  const pads = selectedPads();
+  if (!pads.length) return;
+  commitSnapshot(snapshot());
+  const xs = pads.map(p=>p.x), ys = pads.map(p=>p.y);
+  const o = {
+    id:state.nextId++,
+    x1:Math.min(...xs), y1:Math.min(...ys), x2:Math.max(...xs), y2:Math.max(...ys),
+    label:'Компонент', color:state.color, labelDx:0, labelDy:0
+  };
+  state.outlines.push(o);
+  selection = {pads:[],wires:[],outlines:[o.id]};
+  save(); renderContent(); renderProps(); syncUI();
+}
+
+function rotateElements(dir){
+  const padIds = selection.pads.slice();
+  const outlineIds = selection.outlines.slice();
+  const wireIds = selection.wires.slice();
+  if (!padIds.length && !outlineIds.length && !wireIds.length) return;
+
+  const pads = padIds.map(getPad).filter(Boolean);
+  const outlines = outlineIds.map(getOutline).filter(Boolean);
+  const selectedWires = wireIds.map(getWire).filter(Boolean);
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  const include = (x,y) => {
+    minX = Math.min(minX,x); maxX = Math.max(maxX,x);
+    minY = Math.min(minY,y); maxY = Math.max(maxY,y);
+  };
+  for (const p of pads) include(p.x,p.y);
+  for (const o of outlines){ const b=outlineBounds(o); include(b.minX,b.minY); include(b.maxX,b.maxY); }
+  for (const w of selectedWires) for (const pt of w.points) include(pt[0],pt[1]);
+  if (!Number.isFinite(minX)) return;
+
+  const cx = Math.round((minX+maxX)/2), cy = Math.round((minY+maxY)/2);
+  const rot = (x,y) => dir===1
+    ? [cx+(y-cy), cy-(x-cx)]
+    : [cx-(y-cy), cy+(x-cx)];
+  const rotF = rot;
+
+  const padMoves = pads.map(p => ({p, to:rot(p.x,p.y)}));
+  for (const m of padMoves){
+    if (m.to[0]<0 || m.to[0]>=state.cols || m.to[1]<0 || m.to[1]>=state.rows){
+      alert('Поворот выводит пины за пределы платы.'); return;
+    }
+  }
+  const taken = new Set();
+  for (const p of state.pads){
+    if (!padIds.includes(p.id)) taken.add(p.x+','+p.y);
+  }
+  for (const m of padMoves){
+    const key = m.to[0]+','+m.to[1];
+    if (taken.has(key)){ alert('На целевом месте уже есть пин.'); return; }
+    taken.add(key);
+  }
+
+  const outlineMoves = outlines.map(o => {
+    const a = rot(o.x1,o.y1), b = rot(o.x2,o.y2);
+    const x1 = Math.min(a[0],b[0]), y1 = Math.min(a[1],b[1]);
+    const x2 = Math.max(a[0],b[0]), y2 = Math.max(a[1],b[1]);
+    const lp = outlineLabelPos(o);
+    const nl = rotF(lp.x,lp.y);
+    return {
+      o, x1, y1, x2, y2,
+      labelDx:Math.round((nl[0]-x1)*100)/100,
+      labelDy:Math.round((nl[1]-(y1+LABEL_BASE_Y))*100)/100
+    };
+  });
+  for (const m of outlineMoves){
+    if (m.x1<0 || m.y1<0 || m.x2>=state.cols || m.y2>=state.rows){
+      alert('Поворот выводит контур за пределы платы.'); return;
+    }
+  }
+
+  commitSnapshot(snapshot());
+  const keyMap = new Map(padMoves.map(m => [m.p.x+','+m.p.y, m.to]));
+  const outlineRects = outlines.map(outlineBounds);
+  const area = {minX,maxX,minY,maxY};
+  const selectedPadSet = new Set(padIds);
+  const selectedWireSet = new Set(wireIds);
+
+  for (const m of padMoves){ m.p.x = m.to[0]; m.p.y = m.to[1]; }
+  for (const m of outlineMoves){
+    m.o.x1 = m.x1; m.o.y1 = m.y1; m.o.x2 = m.x2; m.o.y2 = m.y2;
+    m.o.labelDx = m.labelDx; m.o.labelDy = m.labelDy;
+  }
+
+  for (const w of state.wires){
+    const connected = selectedPadSet.has(w.startPadId) || selectedPadSet.has(w.endPadId);
+    const insideOutline = outlineRects.some(r => w.points.every(pt =>
+      pt[0]>=r.minX && pt[0]<=r.maxX && pt[1]>=r.minY && pt[1]<=r.maxY));
+    const selectedWire = selectedWireSet.has(w.id);
+    if (!connected && !insideOutline && !selectedWire) continue;
+    for (const pt of w.points){
+      const mapped = keyMap.get(pt[0]+','+pt[1]);
+      if (mapped){ pt[0] = mapped[0]; pt[1] = mapped[1]; }
+      else if (selectedWire || insideOutline ||
+               (pt[0]>=area.minX && pt[0]<=area.maxX && pt[1]>=area.minY && pt[1]<=area.maxY)){
+        const to = rot(pt[0],pt[1]);
+        pt[0] = to[0]; pt[1] = to[1];
+      }
+    }
+  }
+
+  save(); renderAll();
 }
 
 function undo(){
@@ -313,6 +499,7 @@ function save(){
 function normalize(o){
   if (o.wireType && !o.wireSide) o.wireSide = o.wireType==='jumper' ? 'jumper' : 'front';
   const s = Object.assign(defaults(),o);
+  delete s.library;
   s.cols = clamp(Number(s.cols)||30,2,200);
   s.rows = clamp(Number(s.rows)||22,2,200);
   s.nextId = Number(s.nextId)||1;
@@ -326,9 +513,20 @@ function normalize(o){
     if (!['front','back','jumper'].includes(w.side)) w.side = 'front';
     delete w.type;
   }
+  if (!Array.isArray(s.outlines)) s.outlines = [];
+  s.outlines = s.outlines.filter(o => o && Number.isFinite(+o.x1) && Number.isFinite(+o.x2) &&
+    Number.isFinite(+o.y1) && Number.isFinite(+o.y2)).map(o => ({
+      id:Number(o.id)||s.nextId++,
+      x1:clamp(Math.round(+o.x1),0,s.cols-1), y1:clamp(Math.round(+o.y1),0,s.rows-1),
+      x2:clamp(Math.round(+o.x2),0,s.cols-1), y2:clamp(Math.round(+o.y2),0,s.rows-1),
+      label:String(o.label || 'Компонент'),
+      color:COLORS.some(c => c[0]===o.color) ? o.color : '#3b82f6',
+      labelDx:Number.isFinite(+o.labelDx) ? +o.labelDx : 0,
+      labelDy:Number.isFinite(+o.labelDy) ? +o.labelDy : 0
+    }));
   if (!['front','back','jumper'].includes(s.wireSide)) s.wireSide = s.wireType==='jumper' ? 'jumper' : 'front';
   if (!COLORS.some(c => c[0]===s.backColor)) s.backColor = '#0ea5e9';
-  if (!['pin','via','wire','erase','select','pan'].includes(s.tool)) s.tool = 'pin';
+  if (!['pin','via','wire','erase','select','pan','outline'].includes(s.tool)) s.tool = 'pin';
   return s;
 }
 function load(){
@@ -339,6 +537,285 @@ function load(){
     if (!o || !Array.isArray(o.pads) || !Array.isArray(o.wires)) return;
     state = normalize(o);
   } catch(e){}
+}
+
+function normalizeComponent(c){
+  if (!c || !Array.isArray(c.pads)) return null;
+  const pads = c.pads.filter(p => p && Number.isFinite(+p.dx) && Number.isFinite(+p.dy)).map((p,i) => ({
+    ref:String(p.ref || ('p'+i)), dx:Math.round(+p.dx), dy:Math.round(+p.dy),
+    kind:p.kind==='via' ? 'via' : 'pin',
+    label:String(p.label || ('P'+(i+1))),
+    color:COLORS.some(col => col[0]===p.color) ? p.color : '#111827'
+  }));
+  if (!pads.length) return null;
+  const outlines = (Array.isArray(c.outlines) ? c.outlines : []).filter(o => o &&
+    Number.isFinite(+o.x1) && Number.isFinite(+o.y1) && Number.isFinite(+o.x2) && Number.isFinite(+o.y2)
+  ).map(o => ({
+    x1:Math.round(+o.x1), y1:Math.round(+o.y1), x2:Math.round(+o.x2), y2:Math.round(+o.y2),
+    label:String(o.label || 'Компонент'),
+    color:COLORS.some(col => col[0]===o.color) ? o.color : '#3b82f6',
+    labelDx:Number.isFinite(+o.labelDx) ? +o.labelDx : 0,
+    labelDy:Number.isFinite(+o.labelDy) ? +o.labelDy : 0
+  }));
+  const wires = (Array.isArray(c.wires) ? c.wires : []).filter(w => w && Array.isArray(w.points) && w.points.length>1
+  ).map(w => ({
+    color:COLORS.some(col => col[0]===w.color) ? w.color : '#e11d48',
+    side:['front','back','jumper'].includes(w.side) ? w.side : 'front',
+    autoBack:!!w.autoBack,
+    points:w.points.filter(pt => Array.isArray(pt) && pt.length>=2 && Number.isFinite(+pt[0]) && Number.isFinite(+pt[1]))
+      .map(pt => [Math.round(+pt[0]),Math.round(+pt[1])]),
+    refStart:w.refStart ? String(w.refStart) : null,
+    refEnd:w.refEnd ? String(w.refEnd) : null
+  })).filter(w => w.points.length>1);
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const include = (x,y) => {
+    minX = Math.min(minX,x); maxX = Math.max(maxX,x);
+    minY = Math.min(minY,y); maxY = Math.max(maxY,y);
+  };
+  for (const p of pads) include(p.dx,p.dy);
+  for (const o of outlines){ include(o.x1,o.y1); include(o.x2,o.y2); }
+  for (const w of wires) for (const pt of w.points) include(pt[0],pt[1]);
+
+  return {
+    id:Number(c.id) || nextCompId++,
+    name:String(c.name || 'Компонент'),
+    w:Number.isFinite(+c.w) ? Math.round(+c.w) : maxX-minX,
+    h:Number.isFinite(+c.h) ? Math.round(+c.h) : maxY-minY,
+    placed:Number(c.placed) || 0,
+    pads, outlines, wires
+  };
+}
+
+function builtinArduino(){
+  const left = ['D1/TX','D0/RX','RESET','GND','D2','D3','D4','D5','D6','D7','D8','D9','D10','D11','D12'];
+  const right = ['D13','3V3','AREF','A0','A1','A2','A3','A4','A5','A6','A7','5V','RST','GND','VIN'];
+  const padColor = label => /^(GND|RST|RESET)$/.test(label) ? '#111827'
+    : /^(5V|3V3|VIN)$/.test(label) ? '#e11d48' : '#0ea5e9';
+  const pads = [];
+  left.forEach((label,i) => pads.push({ref:'l'+i,dx:i,dy:0,kind:'pin',label,color:padColor(label)}));
+  right.forEach((label,i) => pads.push({ref:'r'+i,dx:i,dy:6,kind:'pin',label,color:padColor(label)}));
+  return normalizeComponent({
+    id:nextCompId++, name:'Arduino Nano', w:14, h:6, placed:0,
+    pads, wires:[],
+    outlines:[{x1:0,y1:0,x2:14,y2:6,label:'Arduino Nano',color:'#3b82f6',labelDx:0,labelDy:0}]
+  });
+}
+
+function saveLibrary(){
+  try { localStorage.setItem(LIBRARY_KEY,JSON.stringify(library)); } catch(e){}
+}
+function loadLibrary(){
+  try {
+    const raw = localStorage.getItem(LIBRARY_KEY);
+    if (raw===null){
+      library = [builtinArduino()];
+      saveLibrary();
+    } else {
+      const arr = JSON.parse(raw);
+      library = Array.isArray(arr) ? arr.map(normalizeComponent).filter(Boolean) : [];
+    }
+  } catch(e){
+    library = [];
+  }
+  nextCompId = Math.max(0,...library.map(c => c.id)) + 1;
+  renderLibrary();
+}
+function getCurrentComponent(){
+  const id = Number($('librarySelect').value);
+  return library.find(c => c.id===id) || null;
+}
+function updateLibraryButtons(){
+  const c = getCurrentComponent();
+  $('saveComponentBtn').disabled = !componentPads().length;
+  $('insertComponentBtn').disabled = !c;
+  $('renameComponentBtn').disabled = !c;
+  $('deleteComponentBtn').disabled = !c;
+  $('copyBtn').disabled = !selectionCount();
+  $('pasteBtn').disabled = !clipboard;
+}
+function renderLibrary(){
+  const sel = $('librarySelect');
+  const current = sel.value;
+  sel.innerHTML = library.length
+    ? library.map(c => `<option value="${c.id}">${esc(c.name)} · ${c.pads.length} пинов</option>`).join('')
+    : '<option value="">Библиотека пуста</option>';
+  if (current && library.some(c => String(c.id)===current)) sel.value = current;
+  const c = getCurrentComponent();
+  $('libraryInfo').textContent = c
+    ? `${c.pads.length} пинов · ${c.outlines.length} контуров · ${c.wires.length} дорожек · ${c.w+1}×${c.h+1} узлов`
+    : 'Нет сохранённых компонентов';
+  updateLibraryButtons();
+}
+
+function componentPads(){
+  const pads = selectedPads();
+  if (pads.length) return pads;
+  const ids = new Set();
+  for (const o of selection.outlines.map(getOutline).filter(Boolean)){
+    for (const p of padsInOutline(o)) ids.add(p.id);
+  }
+  return Array.from(ids).map(getPad).filter(Boolean);
+}
+function collectComponentElements(){
+  const pads = componentPads();
+  const outlines = selection.outlines.map(getOutline).filter(Boolean);
+  const selectedWireSet = new Set(selection.wires);
+  const padIdSet = new Set(pads.map(p=>p.id));
+  const rects = outlines.map(outlineBounds);
+  const wires = state.wires.filter(w =>
+    selectedWireSet.has(w.id) ||
+    padIdSet.has(w.startPadId) || padIdSet.has(w.endPadId) ||
+    rects.some(r => w.points.every(pt => pt[0]>=r.minX && pt[0]<=r.maxX && pt[1]>=r.minY && pt[1]<=r.maxY))
+  );
+  return {pads,outlines,wires};
+}
+function saveSelectionAsComponent(){
+  const els = collectComponentElements();
+  if (!els.pads.length){ alert('Выберите хотя бы один пин для сохранения.'); return; }
+  const suggested = els.outlines.length===1 && els.outlines[0].label && els.outlines[0].label!=='Компонент'
+    ? els.outlines[0].label : 'Компонент '+(library.length+1);
+  const name = prompt('Название компонента:', suggested);
+  if (name===null) return;
+
+  let minX = Infinity, minY = Infinity;
+  for (const p of els.pads){ minX = Math.min(minX,p.x); minY = Math.min(minY,p.y); }
+  for (const o of els.outlines){ const b=outlineBounds(o); minX=Math.min(minX,b.minX); minY=Math.min(minY,b.minY); }
+  for (const w of els.wires) for (const pt of w.points){ minX=Math.min(minX,pt[0]); minY=Math.min(minY,pt[1]); }
+  const refOf = id => id ? 'p'+id : null;
+  const c = normalizeComponent({
+    id:nextCompId++, name:name.trim() || suggested, placed:0,
+    pads:els.pads.map(p => ({ref:refOf(p.id),dx:p.x-minX,dy:p.y-minY,kind:p.kind,label:p.label,color:p.color})),
+    outlines:els.outlines.map(o => ({
+      x1:o.x1-minX, y1:o.y1-minY, x2:o.x2-minX, y2:o.y2-minY,
+      label:o.label, color:o.color, labelDx:o.labelDx||0, labelDy:o.labelDy||0
+    })),
+    wires:els.wires.map(w => ({
+      refStart:refOf(w.startPadId), refEnd:refOf(w.endPadId),
+      color:w.color, side:w.side, autoBack:w.autoBack,
+      points:w.points.map(pt => [pt[0]-minX,pt[1]-minY])
+    }))
+  });
+  library.push(c);
+  saveLibrary(); renderLibrary();
+  $('librarySelect').value = c.id;
+  updateLibraryButtons();
+}
+
+function makeClipboardFromSelection(){
+  if (!selectionCount()) return null;
+  const els = collectComponentElements();
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const include = (x,y) => {
+    minX = Math.min(minX,x); maxX = Math.max(maxX,x);
+    minY = Math.min(minY,y); maxY = Math.max(maxY,y);
+  };
+  for (const p of els.pads) include(p.x,p.y);
+  for (const o of els.outlines){ const b=outlineBounds(o); include(b.minX,b.minY); include(b.maxX,b.maxY); }
+  for (const w of els.wires) for (const pt of w.points) include(pt[0],pt[1]);
+  if (!Number.isFinite(minX)) return null;
+  const refOf = id => id ? 'p'+id : null;
+  return {
+    id:-1, name:'Буфер обмена', placed:0, w:maxX-minX, h:maxY-minY,
+    pads:els.pads.map(p => ({
+      ref:refOf(p.id), dx:p.x-minX, dy:p.y-minY,
+      kind:p.kind, label:p.label, color:p.color
+    })),
+    outlines:els.outlines.map(o => ({
+      x1:o.x1-minX, y1:o.y1-minY, x2:o.x2-minX, y2:o.y2-minY,
+      label:o.label, color:o.color, labelDx:o.labelDx||0, labelDy:o.labelDy||0
+    })),
+    wires:els.wires.map(w => ({
+      refStart:refOf(w.startPadId), refEnd:refOf(w.endPadId),
+      color:w.color, side:w.side, autoBack:w.autoBack,
+      points:w.points.map(pt => [pt[0]-minX,pt[1]-minY])
+    }))
+  };
+}
+function copySelection(){
+  clipboard = makeClipboardFromSelection();
+  if (!clipboard){ alert('Выберите объекты для копирования.'); return; }
+  updateLibraryButtons(); syncUI();
+}
+function pasteClipboard(){
+  if (!clipboard){ alert('Буфер обмена пуст.'); return; }
+  startPlacement(clipboard);
+}
+
+function startPlacement(c){
+  if (!c) return;
+  pending = null; outlineDraft = null;
+  renderPreview(); renderHover();
+  placement = c;
+  syncUI();
+  if (hover) renderPlacementPreview(hover.x,hover.y);
+}
+function cancelPlacement(){
+  if (!placement) return;
+  placement = null;
+  renderPreview(); syncUI();
+}
+function renderPlacementPreview(x,y){
+  if (!placement){ previewLayer.innerHTML = ''; return; }
+  const ox = x, oy = y;
+  let html = '';
+  for (const o of placement.outlines){
+    const b = {minX:Math.min(o.x1,o.x2),maxX:Math.max(o.x1,o.x2),minY:Math.min(o.y1,o.y2),maxY:Math.max(o.y1,o.y2)};
+    html += `<rect x="${ox+b.minX-0.62}" y="${oy+b.minY-0.62}" width="${b.maxX-b.minX+1.24}" height="${b.maxY-b.minY+1.24}" rx="0.18" fill="none" stroke="${o.color}" stroke-width="0.06" stroke-dasharray="0.2 0.15" opacity="0.65"/>` +
+      `<text class="outline-label" x="${ox+b.minX+(o.labelDx||0)}" y="${oy+b.minY+LABEL_BASE_Y+(o.labelDy||0)}" fill="${o.color}" opacity="0.65">${esc(o.label)}</text>`;
+  }
+  for (const w of placement.wires){
+    const pts = w.points.map(pt => (ox+pt[0])+','+(oy+pt[1])).join(' ');
+    html += `<polyline class="preview-line" points="${pts}" stroke="${w.color}" opacity="0.65"/>`;
+  }
+  for (const p of placement.pads){
+    html += `<circle cx="${ox+p.dx}" cy="${oy+p.dy}" r="0.44" fill="${p.color}" opacity="0.5"/>` +
+      `<circle class="pad-hole" cx="${ox+p.dx}" cy="${oy+p.dy}" r="0.15" opacity="0.55"/>`;
+  }
+  previewLayer.innerHTML = html;
+}
+function placeComponent(c,x,y){
+  if (x+c.w>=state.cols || y+c.h>=state.rows){
+    alert('Компонент не помещается на плату в этом месте.'); return;
+  }
+  for (const p of c.pads){
+    if (padAt(x+p.dx,y+p.dy)){ alert('В этой области уже есть пины.'); return; }
+  }
+
+  commitSnapshot(snapshot());
+  const n = (c.placed || 0) + 1;
+  const labelFor = p => p.label.includes('#') ? p.label.replace('#',String(n)) : p.label;
+  const refMap = new Map();
+  const newPads = c.pads.map(p => {
+    const id = state.nextId++;
+    refMap.set(p.ref,id);
+    return {id, x:x+p.dx, y:y+p.dy, kind:p.kind, label:labelFor(p), color:p.color};
+  });
+  const newOutlines = c.outlines.map(o => ({
+    id:state.nextId++,
+    x1:x+o.x1, y1:y+o.y1, x2:x+o.x2, y2:y+o.y2,
+    label:o.label.includes('#') ? o.label.replace('#',String(n)) : o.label,
+    color:o.color, labelDx:o.labelDx||0, labelDy:o.labelDy||0
+  }));
+  const newWires = c.wires.map(w => ({
+    id:state.nextId++, color:w.color, side:w.side, autoBack:w.autoBack,
+    points:w.points.map(pt => [x+pt[0],y+pt[1]]),
+    startPadId:refMap.get(w.refStart) || null,
+    endPadId:refMap.get(w.refEnd) || null
+  }));
+  state.pads.push(...newPads);
+  state.outlines.push(...newOutlines);
+  state.wires.push(...newWires);
+
+  c.placed = n;
+  if (c!==clipboard){ saveLibrary(); renderLibrary(); }
+  selection = {
+    pads:newPads.map(p=>p.id),
+    wires:newWires.map(w=>w.id),
+    outlines:newOutlines.map(o=>o.id)
+  };
+  placement = null;
+  save(); renderAll(); syncUI();
 }
 
 function padAt(x,y){ return state.pads.find(p => p.x===x && p.y===y) || null; }
@@ -481,7 +958,22 @@ function labelPlacement(p){
   return {x:0.56,y:0.14,anchor:'start'};
 }
 
+function renderOutlines(){
+  outlineLayer.innerHTML = state.outlines.map(o => {
+    const b = outlineBounds(o);
+    const x = b.minX-0.62, y = b.minY-0.62;
+    const w = (b.maxX-b.minX)+1.24, h = (b.maxY-b.minY)+1.24;
+    const sel = isSelected('outlines',o.id)
+      ? `<rect class="sel" x="${x-0.08}" y="${y-0.08}" width="${w+0.16}" height="${h+0.16}" rx="0.22"/>` : '';
+    const lp = outlineLabelPos(o);
+    return `<g class="outline" data-id="${o.id}">` +
+      `<rect class="outline-box" x="${x}" y="${y}" width="${w}" height="${h}" rx="0.18" stroke="${o.color}"/>` +
+      `<text class="outline-label" x="${lp.x}" y="${lp.y}" fill="${o.color}">${esc(o.label)}</text>${sel}</g>`;
+  }).join('');
+}
+
 function renderContent(){
+  renderOutlines();
   wireLayer.innerHTML = state.wires.map(w => {
     const pts = w.points.map(p => p.join(',')).join(' ');
     const isBack = w.side==='back';
@@ -527,6 +1019,7 @@ function previewRoute(){
 }
 
 function renderPreview(){
+  if (placement){ renderPlacementPreview(hover?hover.x:0,hover?hover.y:0); return; }
   const route = previewRoute();
   if (!route.length){
     previewLayer.innerHTML = '';
@@ -542,6 +1035,11 @@ function renderPreview(){
 
 function renderHover(){
   let html = '';
+  if (outlineDraft){
+    const x = Math.min(outlineDraft.x1,outlineDraft.x2), y = Math.min(outlineDraft.y1,outlineDraft.y2);
+    const w = Math.abs(outlineDraft.x2-outlineDraft.x1)+1, h = Math.abs(outlineDraft.y2-outlineDraft.y1)+1;
+    html += `<rect class="outline-draft" x="${x-0.5}" y="${y-0.5}" width="${w}" height="${h}" rx="0.12"/>`;
+  }
   if (marquee){
     const x = Math.min(marquee.x1,marquee.x2), y = Math.min(marquee.y1,marquee.y2);
     const w = Math.abs(marquee.x2-marquee.x1)+1, h = Math.abs(marquee.y2-marquee.y1)+1;
@@ -563,20 +1061,37 @@ function colorOptions(value){
 
 function renderProps(){
   const el = $('props');
-  const np = selection.pads.length, nw = selection.wires.length;
-  if (!np && !nw){
+  updateLibraryButtons();
+  const np = selection.pads.length, nw = selection.wires.length, no = selection.outlines.length;
+  const bindDelete = () => $('propDelete').addEventListener('click', () => {
+    deleteSelection(); renderContent(); renderProps(); syncUI();
+  });
+  const rotateButtons = () =>
+    `<div class="row" style="margin-top:8px;gap:4px">` +
+      `<button id="propRotateCCW" style="flex:1" title="Shift+R">↺ Повернуть</button>` +
+      `<button id="propRotateCW" style="flex:1" title="R">↻ Повернуть</button></div>`;
+  const bindRotate = () => {
+    $('propRotateCCW').addEventListener('click', () => rotateElements(-1));
+    $('propRotateCW').addEventListener('click', () => rotateElements(1));
+  };
+
+  if (!np && !nw && !no){
     el.innerHTML = '<div class="hint">Ничего не выбрано. Ctrl/Shift+клик или рамка — несколько пинов.</div>';
     return;
   }
-  if (np > 1 || (np && nw)){
+  if (np+nw+no > 1){
     const toVia = selectedPads().some(p => p.kind!=='via');
     el.innerHTML =
-      `<div class="stat"><span>Пинов/переходов</span><b>${np}</b></div>` +
+      (np ? `<div class="stat"><span>Пинов/переходов</span><b>${np}</b></div>` : '') +
       (nw ? `<div class="stat"><span>Дорожек</span><b>${nw}</b></div>` : '') +
-      `<button class="wide" id="propConvert" style="margin-top:8px">Сделать ${toVia?'переходами':'пинами'}</button>` +
+      (no ? `<div class="stat"><span>Контуров</span><b>${no}</b></div>` : '') +
+      (np ? `<button class="wide" id="propOutline" style="margin-top:8px">Окантовать выделенное</button>` : '') +
+      (np ? `<button class="wide" id="propConvert" style="margin-top:6px">Сделать ${toVia?'переходами':'пинами'}</button>` : '') +
+      rotateButtons() +
       `<button class="wide danger" id="propDelete" style="margin-top:6px">Удалить выбранное</button>`;
-    $('propConvert').addEventListener('click', () => { convertSelection(); renderContent(); renderProps(); });
-    $('propDelete').addEventListener('click', () => { deleteSelection(); renderContent(); renderProps(); });
+    if (np) $('propOutline').addEventListener('click', createOutlineFromSelection);
+    if (np) $('propConvert').addEventListener('click', () => { convertSelection(); renderContent(); renderProps(); });
+    bindRotate(); bindDelete();
     return;
   }
   if (np === 1){
@@ -587,7 +1102,9 @@ function renderProps(){
       `<div class="row"><label>Цвет</label><select id="propColor">${colorOptions(p.color)}</select></div>` +
       `<div class="stat"><span>Тип</span><b>${p.kind==='via'?'Переход':'Пин'}</b></div>` +
       `<div class="stat"><span>Отверстие</span><b>${p.x+1} / ${p.y+1}</b></div>` +
-      `<button class="wide" id="propConvert" style="margin-top:8px">Сделать ${p.kind==='via'?'пином':'переходом'}</button>` +
+      `<button class="wide" id="propOutline" style="margin-top:8px">Окантовать</button>` +
+      `<button class="wide" id="propConvert" style="margin-top:6px">Сделать ${p.kind==='via'?'пином':'переходом'}</button>` +
+      rotateButtons() +
       `<button class="wide danger" id="propDelete" style="margin-top:6px">Удалить</button>`;
     $('propLabel').addEventListener('change', e => {
       const snap = snapshot(); p.label = e.target.value || 'P' + p.id;
@@ -597,38 +1114,61 @@ function renderProps(){
       const snap = snapshot(); p.color = e.target.value;
       commitSnapshot(snap); renderContent(); renderProps(); save();
     });
+    $('propOutline').addEventListener('click', createOutlineFromSelection);
     $('propConvert').addEventListener('click', () => { convertSelection(); renderContent(); renderProps(); });
-    $('propDelete').addEventListener('click', () => { deleteSelection(); renderContent(); renderProps(); });
+    bindRotate(); bindDelete();
     return;
   }
-  if (nw > 1){
+  if (nw === 1){
+    const w = getWire(selection.wires[0]);
+    if (!w){ clearSelection(); renderProps(); return; }
     el.innerHTML =
-      `<div class="stat"><span>Выбрано дорожек</span><b>${nw}</b></div>` +
-      `<button class="wide danger" id="propDelete" style="margin-top:8px">Удалить выбранные</button>`;
-    $('propDelete').addEventListener('click', () => { deleteSelection(); renderContent(); renderProps(); });
+      `<div class="row"><label>Цвет</label><select id="propColor">${colorOptions(w.color)}</select></div>` +
+      `<div class="row"><label>Сторона</label><select id="propType">` +
+        `<option value="front"${w.side==='front'?' selected':''}>Лицевая</option>` +
+        `<option value="back"${w.side==='back'?' selected':''}>Обратная</option>` +
+        `<option value="jumper"${w.side==='jumper'?' selected':''}>Перемычка</option></select></div>` +
+      `<div class="stat"><span>Длина</span><b>${wireLength(w).toFixed(1)} мм</b></div>` +
+      `<div class="stat"><span>Сегментов</span><b>${w.points.length-1}</b></div>` +
+      (w.autoBack ? '<div class="hint">Обратная сторона задана переходами.</div>' : '') +
+      rotateButtons() +
+      `<button class="wide danger" id="propDelete" style="margin-top:6px">Удалить дорожку</button>`;
+    $('propColor').addEventListener('change', e => {
+      const snap = snapshot(); w.color = e.target.value;
+      commitSnapshot(snap); renderContent(); renderProps(); save();
+    });
+    $('propType').addEventListener('change', e => {
+      const snap = snapshot(); w.side = e.target.value; w.autoBack = false;
+      commitSnapshot(snap); renderContent(); renderProps(); save();
+    });
+    bindRotate(); bindDelete();
     return;
   }
-  const w = getWire(selection.wires[0]);
-  if (!w){ clearSelection(); renderProps(); return; }
+  const o = getOutline(selection.outlines[0]);
+  if (!o){ clearSelection(); renderProps(); return; }
+  const b = outlineBounds(o);
   el.innerHTML =
-    `<div class="row"><label>Цвет</label><select id="propColor">${colorOptions(w.color)}</select></div>` +
-    `<div class="row"><label>Сторона</label><select id="propType">` +
-      `<option value="front"${w.side==='front'?' selected':''}>Лицевая</option>` +
-      `<option value="back"${w.side==='back'?' selected':''}>Обратная</option>` +
-      `<option value="jumper"${w.side==='jumper'?' selected':''}>Перемычка</option></select></div>` +
-    `<div class="stat"><span>Длина</span><b>${wireLength(w).toFixed(1)} мм</b></div>` +
-    `<div class="stat"><span>Сегментов</span><b>${w.points.length-1}</b></div>` +
-    (w.autoBack ? '<div class="hint">Обратная сторона задана переходами.</div>' : '') +
-    `<button class="wide danger" id="propDelete" style="margin-top:8px">Удалить дорожку</button>`;
-  $('propColor').addEventListener('change', e => {
-    const snap = snapshot(); w.color = e.target.value;
+    `<div class="row"><label>Подпись</label><input id="propOutlineLabel" type="text" value="${esc(o.label)}"></div>` +
+    `<div class="row"><label>Цвет</label><select id="propOutlineColor">${colorOptions(o.color)}</select></div>` +
+    `<div class="stat"><span>Область</span><b>${b.minX+1}:${b.minY+1} — ${b.maxX+1}:${b.maxY+1}</b></div>` +
+    `<div class="stat"><span>Сдвиг подписи</span><b>${(o.labelDx||0).toFixed(2)} / ${(o.labelDy||0).toFixed(2)}</b></div>` +
+    `<div class="hint" style="margin-top:6px">Тяните подпись мышью или стрелками.</div>` +
+    `<button class="wide" id="propResetLabel" style="margin-top:6px">Подпись над контуром</button>` +
+    rotateButtons() +
+    `<button class="wide danger" id="propDelete" style="margin-top:6px">Удалить контур</button>`;
+  $('propOutlineLabel').addEventListener('change', e => {
+    const snap = snapshot(); o.label = e.target.value || 'Компонент';
     commitSnapshot(snap); renderContent(); renderProps(); save();
   });
-  $('propType').addEventListener('change', e => {
-    const snap = snapshot(); w.side = e.target.value; w.autoBack = false;
+  $('propOutlineColor').addEventListener('change', e => {
+    const snap = snapshot(); o.color = e.target.value;
     commitSnapshot(snap); renderContent(); renderProps(); save();
   });
-  $('propDelete').addEventListener('click', () => { deleteSelection(); renderContent(); renderProps(); });
+  $('propResetLabel').addEventListener('click', () => {
+    const snap = snapshot(); o.labelDx = 0; o.labelDy = 0;
+    commitSnapshot(snap); renderContent(); renderProps(); save();
+  });
+  bindRotate(); bindDelete();
 }
 
 function syncUI(){
@@ -649,8 +1189,11 @@ function syncUI(){
   $('padCount').textContent = state.pads.filter(p => p.kind!=='via').length;
   $('viaCount').textContent = state.pads.filter(p => p.kind==='via').length;
   $('wireCount').textContent = state.wires.length;
+  $('outlineCount').textContent = state.outlines.length;
   $('backCount').textContent = state.wires.filter(w => w.side==='back').length;
-  $('statusHint').textContent = HINTS[state.tool];
+  $('statusHint').textContent = placement
+    ? `Компонент «${placement.name}»: клик — вставить, Esc — отмена.`
+    : HINTS[state.tool];
   $('undoBtn').disabled = hIndex<=0;
   $('redoBtn').disabled = hIndex>=history.length-1;
 }
@@ -694,16 +1237,41 @@ function clientToGrid(e){
 
 function setTool(tool){
   state.tool = tool;
+  if (placement){ placement=null; }
+  if (labelDrag){ labelDrag=null; svg.classList.remove('label-drag'); }
+  setLabelHover(false);
   if (pending && tool!=='wire'){ pending=null; renderPreview(); }
+  if (outlineDraft && tool!=='outline'){ outlineDraft=null; renderHover(); }
   syncUI(); save();
 }
 
-function startPadDrag(p,e){
-  drag = {ids:selection.pads.slice(), startX:p.x, startY:p.y, snap:snapshot(), origins:new Map(), moved:false};
-  for (const id of drag.ids){
+function startDrag(p,e,extraPadIds,extraOutlineIds){
+  const padIds = selection.pads.slice();
+  for (const id of extraPadIds || []) if (!padIds.includes(id)) padIds.push(id);
+  const outlineIds = selection.outlines.slice();
+  for (const id of extraOutlineIds || []) if (!outlineIds.includes(id)) outlineIds.push(id);
+  drag = {
+    ids:padIds, outlineIds, startX:p.x, startY:p.y, snap:snapshot(),
+    origins:new Map(), outlineOrigins:new Map(), moved:false
+  };
+  for (const id of padIds){
     const pp = getPad(id);
     if (pp) drag.origins.set(id,{x:pp.x,y:pp.y});
   }
+  for (const id of outlineIds){
+    const oo = getOutline(id);
+    if (oo) drag.outlineOrigins.set(id,{x1:oo.x1,y1:oo.y1,x2:oo.x2,y2:oo.y2});
+  }
+  try { svg.setPointerCapture(e.pointerId); } catch(err){}
+}
+
+function startLabelDrag(o,e,p){
+  selectOnly('outlines',o.id);
+  labelDrag = {
+    id:o.id, sx:p.rx, sy:p.ry, snap:snapshot(),
+    dx:o.labelDx||0, dy:o.labelDy||0, moved:false
+  };
+  svg.classList.add('label-drag');
   try { svg.setPointerCapture(e.pointerId); } catch(err){}
 }
 
@@ -714,6 +1282,10 @@ function runClickAction(a){
     else {
       const w = wireAtPoint(a.rx,a.ry,0.45);
       if (w) deleteWire(w.id);
+      else {
+        const o = outlineAtPoint(a.x,a.y);
+        if (o){ selectOnly('outlines',o.id); deleteSelection(); renderProps(); syncUI(); }
+      }
     }
   } else if (pad) deletePad(pad.id);
   else addPad(a.x,a.y,a.tool);
@@ -722,6 +1294,7 @@ function runClickAction(a){
 function onPointerDown(e){
   if (e.button===1 || spaceHeld || state.tool==='pan'){
     pan = {sx:e.clientX, sy:e.clientY, vx:view.x, vy:view.y, id:e.pointerId};
+    svg.classList.remove('label-hover');
     svg.classList.add('grabbing');
     svg.setPointerCapture(e.pointerId);
     e.preventDefault();
@@ -733,29 +1306,58 @@ function onPointerDown(e){
   const p = clientToGrid(e);
   const pad = padAt(p.x,p.y);
 
+  if (placement){
+    placeComponent(placement,p.x,p.y);
+    return;
+  }
+
+  if (state.tool==='outline'){
+    outlineDraft = {x1:p.x,y1:p.y,x2:p.x,y2:p.y};
+    try { svg.setPointerCapture(e.pointerId); } catch(err){}
+    renderHover();
+    return;
+  }
+
   if (state.tool==='pin' || state.tool==='via' || state.tool==='erase'){
     const additive = e.ctrlKey || e.metaKey || e.shiftKey;
     clickAction = {tool:state.tool, x:p.x, y:p.y, rx:p.rx, ry:p.ry, additive};
     dragStart = {x:p.rx,y:p.ry};
-    if (!additive && pad && isSelected('pads',pad.id)) startPadDrag(p,e);
+    if (!additive && pad && isSelected('pads',pad.id)) startDrag(p,e);
     else try { svg.setPointerCapture(e.pointerId); } catch(err){}
     return;
   }
 
   if (state.tool==='select'){
     const additive = e.ctrlKey || e.metaKey || e.shiftKey;
+    const labelOutline = outlineLabelAtPoint(p.rx,p.ry);
+    if (labelOutline && !additive){
+      startLabelDrag(labelOutline,e,p);
+      renderContent(); renderProps(); renderHover();
+      return;
+    }
     if (pad){
       if (additive) toggleSelection('pads',pad.id);
       else if (!isSelected('pads',pad.id)) selectOnly('pads',pad.id);
-      if (isSelected('pads',pad.id)) startPadDrag(p,e);
+      if (isSelected('pads',pad.id)) startDrag(p,e);
     } else {
       const w = wireAtPoint(p.rx,p.ry,0.45);
       if (w){
         if (additive) toggleSelection('wires',w.id);
         else selectOnly('wires',w.id);
-      } else if (!additive) clearSelection();
-      marquee = {x1:p.x,y1:p.y,x2:p.x,y2:p.y,additive};
-      svg.setPointerCapture(e.pointerId);
+      } else {
+        const o = outlineAtPoint(p.rx,p.ry);
+        if (o){
+          if (additive) toggleSelection('outlines',o.id);
+          else if (!isSelected('outlines',o.id)) selectOnly('outlines',o.id);
+          if (isSelected('outlines',o.id)){
+            startDrag(p,e, padsInOutline(o).map(pp => pp.id), [o.id]);
+          }
+        } else {
+          if (!additive) clearSelection();
+          marquee = {x1:p.x,y1:p.y,x2:p.x,y2:p.y,additive};
+          svg.setPointerCapture(e.pointerId);
+        }
+      }
     }
     renderContent(); renderProps(); renderHover();
     return;
@@ -791,7 +1393,35 @@ function onPointerMove(e){
   const p = clientToGrid(e);
   hover = {x:p.x,y:p.y};
   $('coord').textContent = `OTB ${p.x+1}:${p.y+1}  ·  ${(p.x*PITCH).toFixed(2)} / ${(p.y*PITCH).toFixed(2)} мм`;
+  if (placement){
+    renderHover();
+    renderPlacementPreview(p.x,p.y);
+    return;
+  }
+  if (outlineDraft){
+    outlineDraft.x2 = p.x; outlineDraft.y2 = p.y;
+    renderHover();
+    return;
+  }
   renderHover();
+
+  if (labelDrag){
+    const o = getOutline(labelDrag.id);
+    if (o){
+      const dx = Math.round((p.rx-labelDrag.sx)*100)/100;
+      const dy = Math.round((p.ry-labelDrag.sy)*100)/100;
+      const ndx = clamp(labelDrag.dx+dx,-6,state.cols+6);
+      const ndy = clamp(labelDrag.dy+dy,-6,state.rows+6);
+      if (ndx!==o.labelDx || ndy!==o.labelDy){
+        if (!labelDrag.moved){ commitSnapshot(labelDrag.snap); labelDrag.moved = true; }
+        o.labelDx = ndx; o.labelDy = ndy;
+        renderContent(); renderProps();
+      }
+    }
+    return;
+  }
+
+  setLabelHover(state.tool==='select' && !drag && !marquee && !!outlineLabelAtPoint(p.rx,p.ry));
 
   if (clickAction && dragStart && !drag && !marquee){
     if (Math.hypot(p.rx-dragStart.x, p.ry-dragStart.y) > 0.35){
@@ -811,6 +1441,11 @@ function onPointerMove(e){
       minX = Math.min(minX,o.x); maxX = Math.max(maxX,o.x);
       minY = Math.min(minY,o.y); maxY = Math.max(maxY,o.y);
     }
+    for (const o of drag.outlineOrigins.values()){
+      minX = Math.min(minX,o.x1,o.x2); maxX = Math.max(maxX,o.x1,o.x2);
+      minY = Math.min(minY,o.y1,o.y2); maxY = Math.max(maxY,o.y1,o.y2);
+    }
+    if (minX === Infinity) return;
     dx = clamp(dx,-minX,state.cols-1-maxX);
     dy = clamp(dy,-minY,state.rows-1-maxY);
     if (dx!==0 || dy!==0){
@@ -819,6 +1454,10 @@ function onPointerMove(e){
         const o = drag.origins.get(id);
         return {id, x:o.x+dx, y:o.y+dy};
       }));
+      for (const [id,o] of drag.outlineOrigins){
+        const cur = getOutline(id);
+        if (cur){ cur.x1 = o.x1+dx; cur.x2 = o.x2+dx; cur.y1 = o.y1+dy; cur.y2 = o.y2+dy; }
+      }
       renderContent();
     }
   } else if (marquee){
@@ -834,6 +1473,29 @@ function onPointerUp(e){
     pan = null;
     svg.classList.remove('grabbing');
     try { svg.releasePointerCapture(e.pointerId); } catch(err){}
+  }
+  if (labelDrag){
+    labelDrag = null;
+    svg.classList.remove('label-drag');
+    try { svg.releasePointerCapture(e.pointerId); } catch(err){}
+    renderProps(); save();
+    return;
+  }
+  if (outlineDraft){
+    const d = outlineDraft;
+    outlineDraft = null;
+    try { svg.releasePointerCapture(e.pointerId); } catch(err){}
+    commitSnapshot(snapshot());
+    const o = {
+      id:state.nextId++,
+      x1:Math.min(d.x1,d.x2), y1:Math.min(d.y1,d.y2),
+      x2:Math.max(d.x1,d.x2), y2:Math.max(d.y1,d.y2),
+      label:'Компонент', color:state.color, labelDx:0, labelDy:0
+    };
+    state.outlines.push(o);
+    selection = {pads:[],wires:[],outlines:[o.id]};
+    renderHover(); renderContent(); renderProps(); syncUI(); save();
+    return;
   }
   if (drag){
     const d = drag;
@@ -858,15 +1520,83 @@ function onPointerUp(e){
     const y1 = Math.min(marquee.y1,marquee.y2), y2 = Math.max(marquee.y1,marquee.y2);
     const additive = marquee.additive;
     const ids = state.pads.filter(p => p.x>=x1 && p.x<=x2 && p.y>=y1 && p.y<=y2).map(p => p.id);
+    const oids = state.outlines.filter(o => {
+      const b = outlineBounds(o);
+      return b.maxX>=x1 && b.minX<=x2 && b.maxY>=y1 && b.minY<=y2;
+    }).map(o => o.id);
     if (additive){
       for (const id of ids) if (!selection.pads.includes(id)) selection.pads.push(id);
+      for (const id of oids) if (!selection.outlines.includes(id)) selection.outlines.push(id);
     } else {
-      selection.pads = ids; selection.wires = [];
+      selection.pads = ids; selection.wires = []; selection.outlines = oids;
     }
     marquee = null;
     try { svg.releasePointerCapture(e.pointerId); } catch(err){}
     renderHover(); renderContent(); renderProps();
   }
+}
+
+function frameMargin(){
+  const v = parseInt($('frameMargin').value,10);
+  return Number.isFinite(v) ? clamp(v,0,8) : 1;
+}
+function schematicBounds(){
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const include = (x,y) => {
+    minX = Math.min(minX,x); maxX = Math.max(maxX,x);
+    minY = Math.min(minY,y); maxY = Math.max(maxY,y);
+  };
+  for (const p of state.pads) include(p.x,p.y);
+  for (const w of state.wires) for (const pt of w.points) include(pt[0],pt[1]);
+  for (const o of state.outlines){
+    const b = outlineBounds(o);
+    include(b.minX,b.minY); include(b.maxX,b.maxY);
+    const lp = outlineLabelPos(o), lw = outlineLabelWidth(o);
+    include(lp.x-0.08, lp.y-0.42); include(lp.x+lw, lp.y+0.12);
+  }
+  return Number.isFinite(minX) ? {minX,minY,maxX,maxY} : null;
+}
+function shiftAll(dx,dy){
+  for (const p of state.pads){ p.x += dx; p.y += dy; }
+  for (const w of state.wires){
+    for (const pt of w.points){ pt[0] += dx; pt[1] += dy; }
+  }
+  for (const o of state.outlines){ o.x1 += dx; o.x2 += dx; o.y1 += dy; o.y2 += dy; }
+}
+function autoFrame(){
+  const b = schematicBounds();
+  if (!b){ alert('На плате нет объектов для рамки.'); return; }
+  const m = frameMargin();
+  const o = {
+    id:state.nextId++,
+    x1:Math.floor(b.minX-m), y1:Math.floor(b.minY-m),
+    x2:Math.ceil(b.maxX+m), y2:Math.ceil(b.maxY+m),
+    label:'Рамка', color:state.color, labelDx:0, labelDy:0
+  };
+  commitSnapshot(snapshot());
+  state.outlines.push(o);
+  selection = {pads:[], wires:[], outlines:[o.id]};
+  renderAll(); save();
+}
+function fitToFrame(){
+  const ids = selection.outlines.length ? selection.outlines.slice() : state.outlines.map(o=>o.id);
+  const candidates = ids.map(getOutline).filter(Boolean);
+  if (!candidates.length){ alert('Выберите контур-рамку.'); return; }
+  const frame = candidates.reduce((a,b) => {
+    const ba = outlineBounds(a), bb = outlineBounds(b);
+    return (bb.maxX-bb.minX)*(bb.maxY-bb.minY) > (ba.maxX-ba.minX)*(ba.maxY-ba.minY) ? b : a;
+  });
+  const b = outlineBounds(frame), m = frameMargin();
+  const x1 = Math.floor(b.minX-m), y1 = Math.floor(b.minY-m);
+  const x2 = Math.ceil(b.maxX+m), y2 = Math.ceil(b.maxY+m);
+  const cols = Math.max(2,x2-x1+1), rows = Math.max(2,y2-y1+1);
+  commitSnapshot(snapshot());
+  shiftAll(-x1,-y1);
+  state.cols = cols; state.rows = rows;
+  selection = {pads:[], wires:[], outlines:[frame.id]};
+  pending = null; placement = null; drag = null; marquee = null; labelDrag = null; outlineDraft = null;
+  svg.classList.remove('label-drag','label-hover');
+  renderAll(); fitBoard(); save();
 }
 
 function applyBoard(){
@@ -878,6 +1608,10 @@ function applyBoard(){
   for (const p of state.pads){ p.x = clamp(p.x,0,c-1); p.y = clamp(p.y,0,r-1); }
   for (const w of state.wires){
     for (const pt of w.points){ pt[0] = clamp(pt[0],0,c-1); pt[1] = clamp(pt[1],0,r-1); }
+  }
+  for (const o of state.outlines){
+    o.x1 = clamp(o.x1,0,c-1); o.x2 = clamp(o.x2,0,c-1);
+    o.y1 = clamp(o.y1,0,r-1); o.y2 = clamp(o.y2,0,r-1);
   }
   pending = null; clearSelection();
   renderAll(); fitBoard(); save();
@@ -892,6 +1626,7 @@ function svgString(){
   clone.setAttribute('height',`${((state.rows+3.0)*PITCH).toFixed(2)}mm`);
   const p = clone.querySelector('#previewLayer'); if (p) p.remove();
   const u = clone.querySelector('#uiLayer'); if (u) u.remove();
+  clone.querySelectorAll('.sel').forEach(el => el.remove());
   return '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(clone);
 }
 
@@ -904,7 +1639,7 @@ function download(blob,name){
 }
 
 function exportJSON(){
-  const data = JSON.stringify(state,null,2);
+  const data = JSON.stringify(Object.assign({},state,{library}),null,2);
   download(new Blob([data],{type:'application/json'}),'perfboard-layout.json');
 }
 function exportSVG(){
@@ -942,6 +1677,10 @@ function loadDemo(){
   for (const [x,y,label,color,kind] of defs){
     state.pads.push({id:state.nextId++,x,y,label,color,kind});
   }
+  state.outlines = [{
+    id:state.nextId++, x1:3, y1:3, x2:7, y2:8,
+    label:'Транзистор VT1', color:'#3b82f6', labelDx:0, labelDy:0
+  }];
   const vcc = state.pads.find(p=>p.label==='VCC').id;
   const gnd = state.pads.find(p=>p.label==='GND').id;
   const wire = (color,side,points,startPadId,endPadId,autoBack) =>
@@ -983,8 +1722,33 @@ $('cornerBtn').addEventListener('click', () => { state.hFirst = !state.hFirst; s
 $('labelTpl').addEventListener('change', e => { state.labelTpl = e.target.value || 'P#'; save(); });
 $('viaTpl').addEventListener('change', e => { state.viaTpl = e.target.value || 'V#'; save(); });
 $('applyBoard').addEventListener('click', applyBoard);
+$('autoFrameBtn').addEventListener('click', autoFrame);
+$('fitFrameBtn').addEventListener('click', fitToFrame);
 $('undoBtn').addEventListener('click', undo);
 $('redoBtn').addEventListener('click', redo);
+$('rotateCCW').addEventListener('click', () => rotateElements(-1));
+$('rotateCW').addEventListener('click', () => rotateElements(1));
+$('copyBtn').addEventListener('click', copySelection);
+$('pasteBtn').addEventListener('click', pasteClipboard);
+$('librarySelect').addEventListener('change', () => { cancelPlacement(); updateLibraryButtons(); });
+$('saveComponentBtn').addEventListener('click', saveSelectionAsComponent);
+$('insertComponentBtn').addEventListener('click', () => startPlacement(getCurrentComponent()));
+$('renameComponentBtn').addEventListener('click', () => {
+  const c = getCurrentComponent();
+  if (!c) return;
+  const name = prompt('Название компонента:', c.name);
+  if (name===null) return;
+  c.name = name.trim() || c.name;
+  saveLibrary(); renderLibrary(); syncUI();
+});
+$('deleteComponentBtn').addEventListener('click', () => {
+  const c = getCurrentComponent();
+  if (!c) return;
+  if (!confirm(`Удалить «${c.name}» из библиотеки?`)) return;
+  if (placement && placement.id===c.id) cancelPlacement();
+  library = library.filter(item => item.id!==c.id);
+  saveLibrary(); renderLibrary(); syncUI();
+});
 $('zoomIn').addEventListener('click', () => zoomAt(1.2));
 $('zoomOut').addEventListener('click', () => zoomAt(1/1.2));
 $('fitBtn').addEventListener('click', fitBoard);
@@ -1000,7 +1764,12 @@ $('fileInput').addEventListener('change', e => {
       if (!Array.isArray(o.pads) || !Array.isArray(o.wires)) throw new Error('bad file');
       commitSnapshot(snapshot());
       state = normalize(o);
-      clearSelection(); pending = null;
+      if (Array.isArray(o.library)){
+        library = o.library.map(normalizeComponent).filter(Boolean);
+        nextCompId = Math.max(0,...library.map(c => c.id)) + 1;
+        saveLibrary(); renderLibrary();
+      }
+      clearSelection(); pending = null; cancelPlacement();
       renderAll(); fitBoard(); save();
     } catch(err){ alert('Не удалось прочитать файл разводки.'); }
   };
@@ -1012,9 +1781,10 @@ $('pngBtn').addEventListener('click', exportPNG);
 $('printBtn').addEventListener('click', () => window.print());
 $('demoBtn').addEventListener('click', loadDemo);
 $('clearBtn').addEventListener('click', () => {
-  if (!confirm('Удалить все пины, переходы и дорожки?')) return;
+  if (!confirm('Удалить все пины, переходы, дорожки и контуры?')) return;
   commitSnapshot(snapshot());
-  state.pads = []; state.wires = []; state.nextId = 1; state.nextPad = 1; state.nextVia = 1;
+  state.pads = []; state.wires = []; state.outlines = [];
+  state.nextId = 1; state.nextPad = 1; state.nextVia = 1;
   clearSelection(); pending = null;
   renderAll(); save();
 });
@@ -1023,7 +1793,22 @@ svg.addEventListener('pointerdown', onPointerDown);
 svg.addEventListener('pointermove', onPointerMove);
 svg.addEventListener('pointerup', onPointerUp);
 svg.addEventListener('pointercancel', onPointerUp);
-svg.addEventListener('pointerleave', () => { if (!pan && !drag && !marquee){ hover=null; renderHover(); } });
+svg.addEventListener('pointerleave', () => {
+  setLabelHover(false);
+  if (!pan && !drag && !labelDrag && !marquee && !outlineDraft){ hover=null; renderHover(); }
+});
+svg.addEventListener('dblclick', e => {
+  if (state.tool!=='select' && state.tool!=='outline') return;
+  const p = clientToGrid(e);
+  const o = outlineAtPoint(p.rx,p.ry);
+  if (!o) return;
+  const label = prompt('Подпись компонента:', o.label);
+  if (label===null) return;
+  commitSnapshot(snapshot());
+  o.label = label || 'Компонент';
+  selectOnly('outlines',o.id);
+  renderContent(); renderProps(); syncUI(); save();
+});
 svg.addEventListener('contextmenu', e => { e.preventDefault(); if (pending) finishWire(null); });
 svg.addEventListener('wheel', e => { e.preventDefault(); zoomAt(e.deltaY<0?1.12:1/1.12,e.clientX,e.clientY); },{passive:false});
 
@@ -1034,16 +1819,26 @@ document.addEventListener('keydown', e => {
     if (key==='z'){ e.preventDefault(); e.shiftKey?redo():undo(); }
     else if (key==='y'){ e.preventDefault(); redo(); }
     else if (key==='s'){ e.preventDefault(); exportJSON(); }
+    else if (key==='c'){ e.preventDefault(); copySelection(); }
+    else if (key==='v'){ e.preventDefault(); pasteClipboard(); }
     else if (key==='a'){
       e.preventDefault();
-      selection = {pads:state.pads.map(p=>p.id), wires:[]};
-      renderContent(); renderProps();
+      selection = {pads:state.pads.map(p=>p.id), wires:[], outlines:state.outlines.map(o=>o.id)};
+      renderContent(); renderProps(); syncUI();
     }
     return;
   }
   if (e.code==='Space'){ spaceHeld = true; svg.classList.add('grabbing'); e.preventDefault(); return; }
   if (key==='escape'){
-    pending=null; clearSelection(); drag=null; marquee=null;
+    if (labelDrag){
+      const d = labelDrag;
+      labelDrag = null;
+      svg.classList.remove('label-drag');
+      if (d.moved) undo(); else renderContent();
+      return;
+    }
+    if (placement){ cancelPlacement(); return; }
+    pending=null; clearSelection(); drag=null; marquee=null; outlineDraft=null;
     renderPreview(); renderContent(); renderHover(); renderProps(); return;
   }
   if (key==='enter'){ if (pending) finishWire(null); return; }
@@ -1055,10 +1850,27 @@ document.addEventListener('keydown', e => {
     renderContent(); renderProps();
     return;
   }
+  if (['arrowleft','arrowright','arrowup','arrowdown'].includes(key) &&
+      selection.outlines.length===1 && !selection.pads.length && !selection.wires.length){
+    const o = getOutline(selection.outlines[0]);
+    if (o){
+      e.preventDefault();
+      const step = e.shiftKey ? 1 : 0.25;
+      const snap = snapshot();
+      if (key==='arrowleft') o.labelDx = (o.labelDx||0)-step;
+      if (key==='arrowright') o.labelDx = (o.labelDx||0)+step;
+      if (key==='arrowup') o.labelDy = (o.labelDy||0)-step;
+      if (key==='arrowdown') o.labelDy = (o.labelDy||0)+step;
+      commitSnapshot(snap); renderContent(); renderProps(); save();
+      return;
+    }
+  }
+  if (key==='r'){ rotateElements(e.shiftKey?-1:1); return; }
   if (key==='v') setTool('select');
   else if (key==='p') setTool('pin');
   else if (key==='t') setTool('via');
   else if (key==='w') setTool('wire');
+  else if (key==='o') setTool('outline');
   else if (key==='e') setTool('erase');
   else if (key==='h') setTool('pan');
   else if (key==='+' || key==='=') zoomAt(1.2);
@@ -1073,6 +1885,7 @@ window.addEventListener('beforeprint', () => { savedView = Object.assign({},view
 window.addEventListener('afterprint', () => { if (savedView){ view = savedView; savedView=null; updateViewBox(); } });
 
 load();
+loadLibrary();
 initHistory();
 renderAll();
 requestAnimationFrame(fitBoard);
