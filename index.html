@@ -179,6 +179,7 @@ input[type=file]{display:none}
         <h3>Библиотека компонентов</h3>
         <select id="librarySelect" class="wide"></select>
         <div class="hint" id="libraryInfo" style="margin-top:6px"></div>
+        <div class="hint" id="libraryFolderInfo" style="margin-top:4px"></div>
         <div class="stack" style="margin-top:8px">
           <button class="wide" id="saveComponentBtn">Сохранить выделенное</button>
           <button class="wide" id="insertComponentBtn">Вставить на плату</button>
@@ -186,14 +187,22 @@ input[type=file]{display:none}
             <button id="renameComponentBtn" style="flex:1">Переименовать</button>
             <button id="deleteComponentBtn" class="danger" style="flex:1">Удалить</button>
           </div>
+          <button class="wide" id="chooseFolderBtn">Выбрать папку компонентов</button>
+          <button class="wide" id="exportLibraryBtn">Экспорт библиотеки (файл)</button>
+          <div class="row" style="gap:4px">
+            <button id="importLibraryBtn" style="flex:1">Подключить базу</button>
+            <button id="addLibraryBtn" style="flex:1">Добавить из файла</button>
+          </div>
         </div>
-        <div class="hint" style="margin-top:8px">Сохраните пины, контур и провода как шаблон. Вставка — кликом по плате, Esc — отмена.</div>
+        <input id="libraryFileInput" type="file" accept=".json,application/json">
+        <div class="hint" style="margin-top:8px">«Сохранить выделенное» автоматически пишет JSON в выбранную папку — по одному файлу на компонент. Если папка не выбрана, её предложат указать. «Подключить базу» читает компоненты из этой папки. Вставка — кликом по плате, Esc — отмена.</div>
       </div>
 
 
       <div class="card">
         <h3>Файл</h3>
         <div class="stack">
+          <button id="newProjectBtn" class="wide">Новый проект</button>
           <div class="row" style="gap:4px">
             <button id="saveBtn" style="flex:1">Сохранить</button>
             <button id="openBtn" style="flex:1">Открыть</button>
@@ -205,7 +214,7 @@ input[type=file]{display:none}
           <button id="demoBtn">Загрузить пример</button>
           <button id="clearBtn" class="danger">Очистить плату</button>
         </div>
-        <div class="hint">Автосохранение в браузере включено.</div>
+        <div class="hint">Автосохранение в браузере включено. Новый проект очищает разводку и историю, но сохраняет библиотеку компонентов.</div>
       </div>
 
       <div class="card">
@@ -231,6 +240,9 @@ input[type=file]{display:none}
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const STORAGE_KEY = 'proto-board-editor-v1';
 const LIBRARY_KEY = 'proto-component-library-v1';
+const FS_DB_NAME = 'proto-component-library-fs';
+const FS_STORE = 'handles';
+const FS_INDEX_FILE = '.proto-components.json';
 const PITCH = 2.54;
 const COLORS = [
   ['#e11d48','красный'],['#f97316','оранжевый'],['#eab308','жёлтый'],
@@ -280,6 +292,12 @@ let spaceHeld = false;
 let hover = null;
 let library = [];
 let nextCompId = 1;
+let librarySource = '';
+let libraryImportMode = 'replace';
+let dirHandle = null;
+let libraryFolderName = '';
+let fsSyncing = false;
+let fsPending = false;
 let clipboard = null;
 let placement = null;
 
@@ -583,6 +601,7 @@ function normalizeComponent(c){
     w:Number.isFinite(+c.w) ? Math.round(+c.w) : maxX-minX,
     h:Number.isFinite(+c.h) ? Math.round(+c.h) : maxY-minY,
     placed:Number(c.placed) || 0,
+    file:c.file ? String(c.file) : null,
     pads, outlines, wires
   };
 }
@@ -642,10 +661,213 @@ function renderLibrary(){
     : '<option value="">Библиотека пуста</option>';
   if (current && library.some(c => String(c.id)===current)) sel.value = current;
   const c = getCurrentComponent();
-  $('libraryInfo').textContent = c
+  const info = c
     ? `${c.pads.length} пинов · ${c.outlines.length} контуров · ${c.wires.length} дорожек · ${c.w+1}×${c.h+1} узлов`
     : 'Нет сохранённых компонентов';
+  $('libraryInfo').textContent = librarySource ? `${info} · файл: ${librarySource}` : info;
   updateLibraryButtons();
+}
+
+function componentListFromData(data){
+  if (Array.isArray(data)) return data;
+  if (data && Array.isArray(data.components)) return data.components;
+  if (data && Array.isArray(data.library)) return data.library;
+  if (data && Array.isArray(data.pads)) return [data];
+  return null;
+}
+function applyLibraryData(data, append, source){
+  const items = componentListFromData(data);
+  if (!items) return false;
+  if (!append && placement) cancelPlacement();
+  if (source || !append) librarySource = source || '';
+  const startId = append ? nextCompId : 1;
+  const loaded = [];
+  items.forEach((item,i) => {
+    const c = normalizeComponent(Object.assign({},item,{id:startId+i}));
+    if (c) loaded.push(c);
+  });
+  library = append ? library.concat(loaded) : loaded;
+  nextCompId = Math.max(0,...library.map(c => c.id)) + 1;
+  saveLibrary(); renderLibrary(); syncUI();
+  return true;
+}
+function exportLibrary(){
+  download(new Blob([JSON.stringify({version:1,components:library},null,2)],{type:'application/json'}),'component-library.json');
+}
+function openLibraryDialog(mode){
+  libraryImportMode = mode;
+  $('libraryFileInput').click();
+}
+function readLibraryFile(file){
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const data = JSON.parse(reader.result);
+      if (!applyLibraryData(data,libraryImportMode==='add',file.name)) throw new Error('bad library');
+      autoSyncFolder(false);
+    } catch(err){
+      alert('Не удалось прочитать файл библиотеки компонентов.');
+    }
+  };
+  reader.readAsText(file);
+}
+
+function updateFolderInfo(){
+  const el = $('libraryFolderInfo');
+  if (!el) return;
+  if (dirHandle){
+    el.textContent = `Папка компонентов: ${libraryFolderName || dirHandle.name}`;
+  } else if (typeof window.showDirectoryPicker === 'function'){
+    el.textContent = 'Папка компонентов не выбрана — её предложат указать при сохранении.';
+  } else {
+    el.textContent = 'Автосохранение недоступно в этом браузере. Используйте «Экспорт библиотеки (файл)».';
+  }
+}
+function openFsDb(){
+  return new Promise((resolve,reject) => {
+    if (!window.indexedDB){ reject(new Error('IndexedDB недоступна')); return; }
+    const req = indexedDB.open(FS_DB_NAME,1);
+    req.onupgradeneeded = () => {
+      if (!req.result.objectStoreNames.contains(FS_STORE)) req.result.createObjectStore(FS_STORE);
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error('Не удалось открыть IndexedDB'));
+  });
+}
+async function readDirHandle(){
+  const db = await openFsDb();
+  try {
+    return await new Promise((resolve,reject) => {
+      const req = db.transaction(FS_STORE,'readonly').objectStore(FS_STORE).get('libraryDir');
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error || new Error('Не удалось прочитать папку'));
+    });
+  } finally { db.close(); }
+}
+async function writeDirHandle(handle){
+  const db = await openFsDb();
+  try {
+    await new Promise((resolve,reject) => {
+      const tx = db.transaction(FS_STORE,'readwrite');
+      tx.objectStore(FS_STORE).put(handle,'libraryDir');
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Не удалось сохранить папку'));
+    });
+  } finally { db.close(); }
+}
+async function ensureDirHandle(interactive){
+  if (!dirHandle){
+    if (!interactive || typeof window.showDirectoryPicker !== 'function') return null;
+    dirHandle = await window.showDirectoryPicker({mode:'readwrite'});
+    libraryFolderName = dirHandle.name;
+    await writeDirHandle(dirHandle).catch(() => {});
+  }
+  if (dirHandle.queryPermission){
+    const opts = {mode:'readwrite'};
+    let perm = await dirHandle.queryPermission(opts);
+    if (perm !== 'granted' && interactive && dirHandle.requestPermission){
+      perm = await dirHandle.requestPermission(opts);
+    }
+    if (perm !== 'granted') return null;
+  }
+  libraryFolderName = dirHandle.name;
+  updateFolderInfo();
+  return dirHandle;
+}
+async function initLibraryFolder(){
+  try {
+    dirHandle = await readDirHandle();
+    if (dirHandle) libraryFolderName = dirHandle.name;
+  } catch(e){}
+  updateFolderInfo();
+}
+async function readJsonFromDir(dir,name){
+  try {
+    const fh = await dir.getFileHandle(name);
+    const file = await fh.getFile();
+    return JSON.parse(await file.text());
+  } catch(e){ return null; }
+}
+async function writeJsonToDir(dir,name,data){
+  const fh = await dir.getFileHandle(name,{create:true});
+  const writer = await fh.createWritable();
+  await writer.write(JSON.stringify(data,null,2));
+  await writer.close();
+}
+async function removeFromDir(dir,name){
+  try { await dir.removeEntry(name); } catch(e){}
+}
+function componentFileName(c,used){
+  const base = String(c.file || c.name || 'component')
+    .replace(/\.json$/i,'')
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g,'-')
+    .replace(/\s+/g,'-')
+    .replace(/[^A-Za-z0-9А-Яа-яЁё_-]/g,'')
+    .replace(/^-+|-+$/g,'')
+    .slice(0,60) || 'component';
+  let name = base + '.json', i = 2;
+  while (used.has(name)) name = base + '-' + (i++) + '.json';
+  used.add(name);
+  return name;
+}
+async function syncLibraryFolder(interactive){
+  if (fsSyncing){ fsPending = true; return false; }
+  fsSyncing = true;
+  try {
+    const dir = await ensureDirHandle(interactive !== false);
+    if (!dir) return false;
+    const prev = await readJsonFromDir(dir,FS_INDEX_FILE);
+    const oldFiles = prev && Array.isArray(prev.files) ? prev.files : [];
+    const used = new Set();
+    for (const c of library){
+      const name = componentFileName(c,used);
+      c.file = name;
+      await writeJsonToDir(dir,name,c);
+    }
+    for (const name of oldFiles){
+      if (!used.has(name)) await removeFromDir(dir,name);
+    }
+    await writeJsonToDir(dir,FS_INDEX_FILE,{version:1,files:Array.from(used)});
+    saveLibrary(); updateFolderInfo();
+    return true;
+  } finally {
+    fsSyncing = false;
+    if (fsPending){
+      fsPending = false;
+      syncLibraryFolder(interactive !== false).catch(() => {});
+    }
+  }
+}
+async function autoSyncFolder(interactive){
+  try { return await syncLibraryFolder(interactive); }
+  catch(err){
+    if (err && err.name === 'AbortError') return false;
+    alert('Не удалось сохранить библиотеку в папку: ' + (err && err.message ? err.message : String(err)));
+    return false;
+  }
+}
+async function loadLibraryFromFolder(append){
+  let dir;
+  try { dir = await ensureDirHandle(true); }
+  catch(err){
+    if (err && err.name === 'AbortError'){ openLibraryDialog(append ? 'add' : 'replace'); return; }
+    throw err;
+  }
+  if (!dir){ openLibraryDialog(append ? 'add' : 'replace'); return; }
+  const raws = [];
+  for await (const [name,handle] of dir.entries()){
+    if (handle.kind !== 'file' || !name.endsWith('.json') || name.startsWith('.') || name === FS_INDEX_FILE) continue;
+    try {
+      const file = await handle.getFile();
+      const data = JSON.parse(await file.text());
+      const list = componentListFromData(data);
+      if (list) for (const item of list) raws.push(Object.assign({},item,{file:name}));
+    } catch(e){}
+  }
+  if (!raws.length){ alert('В выбранной папке не найдены JSON-файлы с компонентами.'); return; }
+  applyLibraryData(raws,append,dir.name);
+  await autoSyncFolder(false);
 }
 
 function componentPads(){
@@ -670,9 +892,13 @@ function collectComponentElements(){
   );
   return {pads,outlines,wires};
 }
-function saveSelectionAsComponent(){
+async function saveSelectionAsComponent(){
   const els = collectComponentElements();
   if (!els.pads.length){ alert('Выберите хотя бы один пин для сохранения.'); return; }
+  try { await ensureDirHandle(true); }
+  catch(err){
+    if (err && err.name !== 'AbortError') alert('Не удалось выбрать папку: ' + (err.message || err));
+  }
   const suggested = els.outlines.length===1 && els.outlines[0].label && els.outlines[0].label!=='Компонент'
     ? els.outlines[0].label : 'Компонент '+(library.length+1);
   const name = prompt('Название компонента:', suggested);
@@ -700,6 +926,7 @@ function saveSelectionAsComponent(){
   saveLibrary(); renderLibrary();
   $('librarySelect').value = c.id;
   updateLibraryButtons();
+  await autoSyncFolder(false);
 }
 
 function makeClipboardFromSelection(){
@@ -808,7 +1035,7 @@ function placeComponent(c,x,y){
   state.wires.push(...newWires);
 
   c.placed = n;
-  if (c!==clipboard){ saveLibrary(); renderLibrary(); }
+  if (c!==clipboard){ saveLibrary(); renderLibrary(); autoSyncFolder(false); }
   selection = {
     pads:newPads.map(p=>p.id),
     wires:newWires.map(w=>w.id),
@@ -1663,6 +1890,21 @@ function exportPNG(){
   img.src = url;
 }
 
+function newProject(){
+  if (state.pads.length || state.wires.length || state.outlines.length){
+    if (!confirm('Создать новый проект? Текущая разводка будет удалена. Библиотека компонентов сохранится.')) return;
+  }
+  state = defaults();
+  clearSelection();
+  clipboard = null;
+  pending = null; drag = null; labelDrag = null; marquee = null; outlineDraft = null;
+  pan = null; clickAction = null; dragStart = null; placement = null; hover = null;
+  svg.classList.remove('grabbing','label-hover','label-drag');
+  $('coord').textContent = '';
+  initHistory();
+  renderAll(); fitBoard(); save();
+}
+
 function loadDemo(){
   commitSnapshot(snapshot());
   state.cols = 24; state.rows = 16;
@@ -1733,25 +1975,52 @@ $('pasteBtn').addEventListener('click', pasteClipboard);
 $('librarySelect').addEventListener('change', () => { cancelPlacement(); updateLibraryButtons(); });
 $('saveComponentBtn').addEventListener('click', saveSelectionAsComponent);
 $('insertComponentBtn').addEventListener('click', () => startPlacement(getCurrentComponent()));
-$('renameComponentBtn').addEventListener('click', () => {
+$('renameComponentBtn').addEventListener('click', async () => {
   const c = getCurrentComponent();
   if (!c) return;
+  try { await ensureDirHandle(true); } catch(err){}
   const name = prompt('Название компонента:', c.name);
   if (name===null) return;
   c.name = name.trim() || c.name;
+  c.file = null;
   saveLibrary(); renderLibrary(); syncUI();
+  await autoSyncFolder(false);
 });
-$('deleteComponentBtn').addEventListener('click', () => {
+$('deleteComponentBtn').addEventListener('click', async () => {
   const c = getCurrentComponent();
   if (!c) return;
+  try { await ensureDirHandle(true); } catch(err){}
   if (!confirm(`Удалить «${c.name}» из библиотеки?`)) return;
   if (placement && placement.id===c.id) cancelPlacement();
   library = library.filter(item => item.id!==c.id);
   saveLibrary(); renderLibrary(); syncUI();
+  await autoSyncFolder(false);
+});
+$('chooseFolderBtn').addEventListener('click', async () => {
+  try {
+    const dir = await ensureDirHandle(true);
+    if (!dir) return;
+    await autoSyncFolder(false);
+  } catch(err){
+    if (err && err.name !== 'AbortError') alert('Не удалось выбрать папку: ' + (err.message || err));
+  }
+});
+$('exportLibraryBtn').addEventListener('click', exportLibrary);
+$('importLibraryBtn').addEventListener('click', () => {
+  loadLibraryFromFolder(false).catch(err => alert('Не удалось прочитать папку: ' + (err.message || err)));
+});
+$('addLibraryBtn').addEventListener('click', () => {
+  loadLibraryFromFolder(true).catch(err => alert('Не удалось прочитать папку: ' + (err.message || err)));
+});
+$('libraryFileInput').addEventListener('change', e => {
+  const file = e.target.files && e.target.files[0];
+  if (file) readLibraryFile(file);
+  e.target.value = '';
 });
 $('zoomIn').addEventListener('click', () => zoomAt(1.2));
 $('zoomOut').addEventListener('click', () => zoomAt(1/1.2));
 $('fitBtn').addEventListener('click', fitBoard);
+$('newProjectBtn').addEventListener('click', newProject);
 $('saveBtn').addEventListener('click', exportJSON);
 $('openBtn').addEventListener('click', () => $('fileInput').click());
 $('fileInput').addEventListener('change', e => {
@@ -1764,11 +2033,7 @@ $('fileInput').addEventListener('change', e => {
       if (!Array.isArray(o.pads) || !Array.isArray(o.wires)) throw new Error('bad file');
       commitSnapshot(snapshot());
       state = normalize(o);
-      if (Array.isArray(o.library)){
-        library = o.library.map(normalizeComponent).filter(Boolean);
-        nextCompId = Math.max(0,...library.map(c => c.id)) + 1;
-        saveLibrary(); renderLibrary();
-      }
+      if (Array.isArray(o.library)){ applyLibraryData({components:o.library},false); autoSyncFolder(false); }
       clearSelection(); pending = null; cancelPlacement();
       renderAll(); fitBoard(); save();
     } catch(err){ alert('Не удалось прочитать файл разводки.'); }
@@ -1886,6 +2151,7 @@ window.addEventListener('afterprint', () => { if (savedView){ view = savedView; 
 
 load();
 loadLibrary();
+initLibraryFolder();
 initHistory();
 renderAll();
 requestAnimationFrame(fitBoard);
